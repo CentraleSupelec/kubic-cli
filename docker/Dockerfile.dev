@@ -1,0 +1,22 @@
+FROM python:3.11-slim AS runtime
+
+# Prevents Python from buffering stdout/stderr
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+# Working directory inside the container
+WORKDIR /app
+
+# Install Python dependencies first (better build cache utilisation)
+COPY requirements.txt ./
+RUN pip install -r requirements.txt
+
+# Copy the project source
+COPY kubic_cli/ kubic_cli/
+
+# Add /app to PYTHONPATH so editable mounts (via docker-compose) work
+ENV PYTHONPATH=/app
+
+# Default command is the kubic-cli; additional arguments can be appended:
+#   docker compose run --rm kubic-cli --help
+ENTRYPOINT ["python", "-m", "kubic_cli.main"] 

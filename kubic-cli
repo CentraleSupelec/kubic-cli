@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Wrapper universel pour lancer kubic-cli dans Docker.
+# Monte automatiquement les secrets et ajoute --cluster-ca si nécessaire.
+
+set -euo pipefail
+
+IMAGE="kubic-cli:local"
+WORKDIR="$(pwd)"
+SECRETS="$WORKDIR/secrets"
+
+# Options docker génériques (montage du dépôt courant)
+DOCKER_OPTS=( -v "$WORKDIR":/app )
+# Arguments CLI à transmettre tels quels
+CLI_ARGS=( "$@" )
+
+# 1) Fichier d'environnement (.env)
+if [[ -f "$SECRETS/.env" ]]; then
+  DOCKER_OPTS+=( --env-file "$SECRETS/.env" )
+fi
+
+# 2) config.toml
+if [[ -f "$SECRETS/config.toml" ]]; then
+  DOCKER_OPTS+=( -v "$SECRETS/config.toml":/run/secrets/config.toml:ro )
+fi
+
+# 3) ca.crt
+if [[ -f "$SECRETS/ca.crt" ]]; then
+  DOCKER_OPTS+=( -v "$SECRETS/ca.crt":/run/secrets/ca.crt:ro )
+  
+  # Vérifie si c'est une commande qui peut utiliser --cluster-ca
+  SHOULD_ADD_CA=false
+  
+  # Ne pas ajouter --cluster-ca pour les commandes d'aide
+  if [[ ! " ${CLI_ARGS[*]} " =~ " --help " ]] && [[ ! " ${CLI_ARGS[*]} " =~ " -h " ]]; then
+    # Vérifier si c'est une commande qui utilise --cluster-ca
+    for arg in "${CLI_ARGS[@]}"; do
+      if [[ "$arg" == "create-project" ]] || [[ "$arg" == "setup-devs" ]] || [[ "$arg" == "add-environment" ]]; then
+        SHOULD_ADD_CA=true
+        break
+      fi
+    done
+  fi
+  
+  # Injecte --cluster-ca si absent et si la commande l'utilise
+  if [[ "$SHOULD_ADD_CA" == "true" ]] && [[ ! " ${CLI_ARGS[*]} " =~ " --cluster-ca " ]]; then
+    CLI_ARGS+=( --cluster-ca /run/secrets/ca.crt )
+  fi
+fi
+
+# (Re)build l'image si elle n'existe pas localement (première exécution)
+if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+  echo "[INFO] Image $IMAGE absente → build local via docker/Dockerfile" >&2
+  docker build -f "$WORKDIR/docker/Dockerfile" -t "$IMAGE" "$WORKDIR"
+fi
+
+exec docker run --rm -it "${DOCKER_OPTS[@]}" "$IMAGE" "${CLI_ARGS[@]}" 

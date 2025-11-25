@@ -1,0 +1,12 @@
+version: "3.9"
+
+services:
+  kubic-cli:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dev
+    image: kubic-cli:dev
+    working_dir: /app
+    volumes:
+      - .:/app
+    entrypoint: ["tail", "-f", "/dev/null"]

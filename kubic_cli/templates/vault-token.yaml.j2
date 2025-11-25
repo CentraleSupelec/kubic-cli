@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vault-token-[[ slug ]]
+  namespace: argocd
+type: Opaque
+stringData:
+  VAULT_ADDR: [[ vault_addr ]]
+  AVP_TYPE: vault
+  AVP_AUTH_TYPE: approle
+  AVP_ROLE_ID: <path:kv/data/argocd/avp/[[ slug ]]#role_id>
+  AVP_SECRET_ID: <path:kv/data/argocd/avp/[[ slug ]]#secret_id> 

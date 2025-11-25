@@ -1,6 +1,6 @@
 # Kubic CLI
 
-> Outil d'automatisation pour la gestion de projets Kubernetes avec Argo CD et Vault
+> Outil d'automatisation pour la gestion de projets Kubernetes avec Argo CD et Vault sur Kubic
 
 Kubic CLI simplifie la création et la gestion de projets Kubernetes en automatisant la configuration de :
 - 🗂️ **GitOps** : Arborescence de manifests pour Argo CD
@@ -397,16 +397,16 @@ Les contributions sont les bienvenues ! Merci de :
 
 ## License
 
-[Choisir une license : MIT, Apache 2.0, etc.]
+MIT
 
 ---
 
 ## Support
 
 - 📖 Documentation : Consultez `./kubic-cli <command> --help`
-- 🐛 Issues : [GitHub Issues](https://github.com/votre-org/kubic-cli/issues)
-- 💬 Discussions : [GitHub Discussions](https://github.com/votre-org/kubic-cli/discussions)
+- 🐛 Issues : [GitHub Issues](https://github.com/CentraleSupelec/kubic-cli/issues)
+- 💬 Discussions : [GitHub Discussions](https://github.com/CentraleSupelec/kubic-cli/discussions)
 
 ---
 
-**Fait avec ❤️ pour simplifier la gestion Kubernetes**
+**Fait avec ❤️ pour simplifier la gestion de projet Kubic**

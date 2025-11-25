@@ -1,0 +1,44 @@
+# Python bytecode et caches
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Environnements virtuels
+.venv/
+.env
+env/
+venv/
+secrets/
+
+# Fichiers de logs ou temporaires
+*.log
+*.tmp
+
+# Outils de test
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Outils de lint/format
+.mypy_cache/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# IDEs / éditeurs
+.vscode/
+.idea/
+*.swp
+
+# Fichiers secrets potentiels
+*.pem
+*.key
+*.kubeconfig
+*.crt
+*.toml
+
+# Dépendances lock locales (si générées)
+poetry.lock
+Pipfile.lock 

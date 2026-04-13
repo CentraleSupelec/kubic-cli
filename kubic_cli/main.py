@@ -611,7 +611,6 @@ def add_dev(
 
     if not really_new:
         typer.echo("[INFO] Aucun nouveau développeur à ajouter")
-        return
 
     typer.echo(f"[INFO] Ajout des développeurs: {sorted(really_new)}")
 
@@ -668,7 +667,7 @@ def add_dev(
         typer.echo("[INFO] Aucune adresse ou token Vault fourni : configuration Vault non effectuée")
     else:
         # Appeler vault.provision avec tous les environnements et seulement les nouveaux devs
-        vault.provision(slug, sorted(existing_envs), addr=vault_addr, token=vault_token, devs=list(really_new))
+        vault.provision(slug, sorted(existing_envs), addr=vault_addr, token=vault_token, devs=list(new_dev_list))
 
     typer.secho(f"\n✅ Développeurs {sorted(really_new)} ajoutés avec succès au projet '{slug}'", fg=typer.colors.GREEN)
     typer.echo(f"   Accès à tous les environnements: {sorted(existing_envs)}")

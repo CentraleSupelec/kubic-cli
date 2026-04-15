@@ -234,7 +234,7 @@ def generate_multi_environment_kubeconfig(
     # Generate contexts (one per environment)
     contexts = []
     for env in sorted(environments):
-        namespace = f"{slug}-{env}"
+        namespace = slug if slug == env else f"{slug}-{env}"
         context_name = f"{dev_name}-{env}@{cluster_name}"
 
         context_config = f"""- context:

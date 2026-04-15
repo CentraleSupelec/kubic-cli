@@ -45,7 +45,7 @@ def create_project(
         }
         env_list = [e.strip() for e in environments.split(",") if e.strip()]
         for env in env_list:
-            ns = f"{slug}-{env}"
+            ns = slug if slug == env else f"{slug}-{env}"
             body = {"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": ns}}
             # Choix de la vérification TLS : fichier CA > --insecure.
             verify_opt = str(ca_file) if ca_file and ca_file.exists() else (not insecure)
@@ -319,7 +319,7 @@ def setup_devs(
                     tok = r.json()["status"]["token"]
                     
                     # Collecter credentials avec info sur tous les namespaces accessibles
-                    namespaces_list = [f"{slug}-{env}" for env in dev_envs]
+                    namespaces_list = [slug if slug == env else f"{slug}-{env}" for env in dev_envs]
                     cred.collect("k8s", dev, tok, api_server, note=f"ns {','.join(namespaces_list)}")
                     typer.echo(f"[WRITE] Token k8s généré pour {dev} (accès: {dev_envs})")
 
@@ -472,7 +472,7 @@ def add_environment(
             "Content-Type": "application/json",
         }
         for env in sorted(really_new):
-            ns = f"{slug}-{env}"
+            ns = slug if slug == env else f"{slug}-{env}"
             body = {"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": ns}}
             verify_opt = str(ca_file) if ca_file and ca_file.exists() else (not insecure)
             try:

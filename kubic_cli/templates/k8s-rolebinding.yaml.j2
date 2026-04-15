@@ -2,7 +2,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: [[ user ]]
-  namespace: [[ slug ]]-[[ env ]]
+  namespace: [[ slug if slug == env else slug + '-' + env ]]
 subjects:
   - kind: ServiceAccount
     name: [[ user ]]

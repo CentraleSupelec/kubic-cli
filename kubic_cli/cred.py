@@ -49,6 +49,8 @@ def _push_secret(secret: str) -> Optional[str]:
 
 
 def _short(text: str, limit: int) -> str:
+    if text is None:
+        return ""
     if len(text) <= limit:
         return text
     return text[: limit - 1] + "…"
@@ -71,37 +73,28 @@ def flush():
     # Affichage tableau
     term_width = shutil.get_terminal_size((120, 20)).columns
     # max lengths per column (fallback values)
-    limits = {
-        "service": 15,
-        "login": 15,
-        "secret": 22,
-        "link": 45,
-        "url": 45,
-        "note": 20,
-    }
+    limit = term_width - 20  # leave some space for other columns
 
     # Apply shorten for display and compute widths
     rows = []
     for cred in _CREDS:
         row = {
-            "service": _short(cred["service"], limits["service"]),
-            "login": _short(cred["login"], limits["login"]),
-            "secret": _short(cred["secret"], limits["secret"]),
-            "link": _short(cred["pwp"], limits["link"]),
-            "url": _short(cred["url"], limits["url"]),
-            "note": _short(cred["note"], limits["note"]),
+            "service": _short(cred["service"], limit),
+            "login": _short(cred["login"], limit),
+            "secret": _short(cred["secret"], limit),
+            "link": _short(cred["pwp"], limit),
+            "url": _short(cred["url"], limit),
+            "note": _short(cred["note"], limit),
         }
-        for k, lim in limits.items():
-            row[k] = _short(row[k], lim)
         rows.append(row)
 
-    head = tuple(k.capitalize() for k in limits.keys())
-    col_widths = [max(len(r[k]) for r in rows + [dict(zip(limits.keys(), head))]) + 2 for k in limits]
+    head = tuple(k.capitalize() for k in row.keys())
+    col_widths = [max(len(r[k]) for r in rows + [dict(zip(row.keys(), head))]) + 2 for k in row]
     total = sum(col_widths)
     if total > term_width:
         # Reduce link & url proportionally
         over = total - term_width
-        idx = [list(limits.keys()).index("url"), list(limits.keys()).index("link")]
+        idx = [list(row.keys()).index("url"), list(row.keys()).index("link")]
         for i in idx:
             reduce_by = min(over, col_widths[i] - 10)
             col_widths[i] -= reduce_by
@@ -109,12 +102,20 @@ def flush():
             if over <= 0:
                 break
 
-    fmt = "".join([f"{{:<{w}}}" for w in col_widths])
+    # Affichage tableau pivote: une ligne par attribut
     print("\n=== Credentials générés ===")
-    print(fmt.format(*head))
-    print("-" * sum(col_widths))
-    for row in rows:
-        print(fmt.format(row["service"], row["login"], row["secret"], row["link"], row["url"], row["note"]))
+    
+    # Calculer la largeur de colonne pour les noms d'attributs
+    attr_width = max(len(k) for k in row.keys()) + 2
+    
+    for i, row in enumerate(rows):
+        if i > 0:
+            print()  # Ligne vide entre chaque credential
+        
+        for k in row.keys():
+            value = _short(row[k], limit)
+            attr_name = k.capitalize()
+            print(f"{attr_name:<{attr_width}} | {value}")
 
     # Vider et terminer
     _CREDS.clear()

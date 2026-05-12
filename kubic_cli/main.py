@@ -612,6 +612,22 @@ def add_dev(
     if not really_new:
         typer.echo("[INFO] Aucun nouveau développeur à ajouter")
 
+    # Distinguer devs existants globalement (autres projets) vs vraiment nouveaux
+    truly_new = {d for d in really_new if is_new_developer(gitops_path, d)}
+    existing_globally = really_new - truly_new
+
+    if existing_globally:
+        typer.echo(f"[INFO] Devs existant déjà (rattachement au projet): {sorted(existing_globally)}")
+
+    if truly_new:
+        typer.secho(
+            f"[WARN] Devs inconnus, seront créés: {sorted(truly_new)}",
+            fg=typer.colors.YELLOW,
+        )
+        if not typer.confirm("Confirmer la création de ces nouveaux développeurs ?", default=False):
+            typer.secho("[ABORT] Création annulée par l'utilisateur.", fg=typer.colors.RED)
+            raise typer.Exit(1)
+
     typer.echo(f"[INFO] Ajout des développeurs: {sorted(really_new)}")
 
     # 4. AUTO-DÉTECTION : Récupérer environnements existants

@@ -138,6 +138,24 @@ subjects:
     assert envs == {"dev", "prod"}
 
 
+def test_parse_existing_environments_namespace_equal_to_slug(tmp_path: Path):
+    """A RoleBinding on the bare slug namespace yields env == slug."""
+    user_yaml = tmp_path / "user-myapp.yaml"
+    user_yaml.write_text("""apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: myapp
+  namespace: myapp
+subjects:
+  - kind: ServiceAccount
+    name: myapp
+    namespace: default
+""")
+
+    envs = utils.parse_existing_environments_from_k8s_yaml(user_yaml, "myapp", "myapp")
+    assert envs == {"myapp"}
+
+
 def test_auto_detect_existing_developers(tmp_path: Path):
     """Test auto-detection of existing developers."""
     # No directory
@@ -326,3 +344,17 @@ metadata:
     # Verify original content is still there
     assert "kind: ServiceAccount" in final_content
     assert "kind: Secret" in final_content 
+
+def test_cred_flush_pushes_custom_payload(monkeypatch):
+    """A custom payload (e.g. a full kubeconfig) is pushed instead of login/secret/url."""
+    from kubic_cli import cred
+
+    pushed = []
+    monkeypatch.setattr(cred, "_push_secret", lambda secret: pushed.append(secret) or "https://pwpush/p/x")
+
+    cred.collect("k8s", "alice", "tok", "https://k8s", payload="apiVersion: v1\nkind: Config\n")
+    cred.collect("vault", "bob", "pwd", "https://vault")
+    cred.flush()
+
+    assert pushed[0] == "apiVersion: v1\nkind: Config\n"
+    assert pushed[1] == "login: bob\nsecret: pwd\nurl: https://vault\n"

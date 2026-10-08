@@ -203,7 +203,7 @@ def setup_devs(
     api_token: Optional[str] = typer.Option(None, "--api-token", envvar="KUBE_API_TOKEN", help="Token Bearer pour l'API Kubernetes"),
     insecure: bool = typer.Option(False, "--insecure-skip-tls", help="Ne pas vérifier le certificat TLS de l'API"),
     duration: str = typer.Option("2160h", "--duration", help="Durée du token ServiceAccount (ex: 2160h)"),
-    write_kubeconfig: Optional[Path] = typer.Option(None, "--write-kubeconfig", help="Dossier ou chemin fichier pour écrire un kubeconfig par dev (ou '-' pour stdout)"),
+    write_kubeconfig: Optional[Path] = typer.Option(None, "--write-kubeconfig", help="Répertoire où écrire <dev>.kubeconfig pour chaque dev, créé si absent (ou '-' pour stdout)"),
     cluster_name: str = typer.Option("kubic", "--cluster-name", help="Nom du cluster dans le kubeconfig généré"),
     context_name: Optional[str] = typer.Option(None, "--context-name", help="Nom du contexte (défaut <user>-<env>@<cluster> pour multi-env)"),
     ca_file: Optional[Path] = typer.Option(None, "--cluster-ca", help="Chemin vers le certificat CA à embarquer dans kubeconfig"),
@@ -234,6 +234,13 @@ def setup_devs(
     if not dev_list:
         typer.secho("[ERROR] Aucun dev fourni", fg=typer.colors.RED)
         raise typer.Exit(1)
+
+    # VALIDATION : --write-kubeconfig doit être un répertoire (créé si absent)
+    if write_kubeconfig and str(write_kubeconfig) != "-":
+        if write_kubeconfig.exists() and not write_kubeconfig.is_dir():
+            typer.secho(f"[ERROR] --write-kubeconfig doit être un répertoire : {write_kubeconfig} est un fichier", fg=typer.colors.RED)
+            raise typer.Exit(1)
+        write_kubeconfig.mkdir(parents=True, exist_ok=True)
 
     # 3. DÉTERMINATION : Environnements à traiter
     target_environments = {}  # {dev: [env1, env2, ...]}
@@ -318,19 +325,16 @@ def setup_devs(
                 if r.ok:
                     tok = r.json()["status"]["token"]
                     
-                    # Collecter credentials avec info sur tous les namespaces accessibles
                     namespaces_list = [slug if slug == env else f"{slug}-{env}" for env in dev_envs]
-                    cred.collect("k8s", dev, tok, api_server, note=f"ns {','.join(namespaces_list)}")
                     typer.echo(f"[WRITE] Token k8s généré pour {dev} (accès: {dev_envs})")
 
                     # Génération du kubeconfig multi-environnements
-                    if write_kubeconfig:
-                        ca_data = base64.b64encode(ca_file.read_bytes()).decode()
-                        
-                        # Support pour context_name custom (mode single environnement)
-                        if context_name and len(dev_envs) == 1:
-                            # Mode rétrocompatibilité avec context_name personnalisé
-                            kubeconf = f"""apiVersion: v1
+                    ca_data = base64.b64encode(ca_file.read_bytes()).decode()
+
+                    # Support pour context_name custom (mode single environnement)
+                    if context_name and len(dev_envs) == 1:
+                        # Mode rétrocompatibilité avec context_name personnalisé
+                        kubeconf = f"""apiVersion: v1
 kind: Config
 clusters:
 - cluster:
@@ -340,7 +344,7 @@ clusters:
 contexts:
 - context:
     cluster: {cluster_name}
-    namespace: {slug}-{dev_envs[0]}
+    namespace: {namespaces_list[0]}
     user: {dev}
   name: {context_name}
 current-context: {context_name}
@@ -349,31 +353,28 @@ users:
 - name: {dev}
   user:
     token: {tok}"""
-                        else:
-                            # Mode multi-environnements (recommandé)
-                            default_env = dev_envs[0] if dev_envs else 'dev'
-                            kubeconf = generate_multi_environment_kubeconfig(
-                                dev_name=dev,
-                                slug=slug,
-                                environments=dev_envs,
-                                api_server=api_server,
-                                token=tok,
-                                cluster_name=cluster_name,
-                                ca_data=ca_data,
-                                default_env=default_env
-                            )
+                    else:
+                        # Mode multi-environnements (recommandé)
+                        default_env = dev_envs[0] if dev_envs else 'dev'
+                        kubeconf = generate_multi_environment_kubeconfig(
+                            dev_name=dev,
+                            slug=slug,
+                            environments=dev_envs,
+                            api_server=api_server,
+                            token=tok,
+                            cluster_name=cluster_name,
+                            ca_data=ca_data,
+                            default_env=default_env
+                        )
 
+                    # Collecter credentials : le kubeconfig complet est partagé via Password Pusher
+                    cred.collect("k8s", dev, tok, api_server, note=f"ns {','.join(namespaces_list)}", payload=kubeconf)
+
+                    if write_kubeconfig:
                         if str(write_kubeconfig) == "-":
                             typer.echo(f"\n--- kubeconfig {dev} ---\n" + kubeconf)
                         else:
-                            # Déterminer le chemin de sortie
-                            if write_kubeconfig.is_dir():
-                                out_path = write_kubeconfig / f"{dev}.kubeconfig"
-                            elif len(dev_list) == 1:
-                                out_path = write_kubeconfig
-                            else:
-                                out_path = write_kubeconfig.parent / f"{write_kubeconfig.stem}-{dev}{write_kubeconfig.suffix}"
-                            
+                            out_path = write_kubeconfig / f"{dev}.kubeconfig"
                             out_path.write_text(kubeconf)
                             typer.secho(f"[WRITE] kubeconfig -> {out_path} (contextes: {dev_envs})", fg=typer.colors.GREEN)
                 else:

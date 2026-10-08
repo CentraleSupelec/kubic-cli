@@ -86,8 +86,11 @@ def parse_existing_environments_from_k8s_yaml(yaml_file: Path, user: str, slug: 
             # Parse namespace in metadata section
             if in_metadata and stripped.startswith('namespace:'):
                 namespace_value = stripped.split(':', 1)[1].strip()
+                # Namespace equal to slug means env == slug (no suffix)
+                if namespace_value == slug:
+                    envs.add(slug)
                 # Extract env from namespace like "myapp-dev" -> "dev"
-                if namespace_value.startswith(f'{slug}-'):
+                elif namespace_value.startswith(f'{slug}-'):
                     env = namespace_value[len(f'{slug}-'):]
                     if env:  # Avoid empty strings
                         envs.add(env)

@@ -14,11 +14,14 @@ def collect(
     url: Optional[str] = None,
     note: str = "",
     link: Optional[str] = None,
+    payload: Optional[str] = None,
 ):
     """Enregistre un credential pour affichage ultérieur.
 
     link : URL déjà prête (ex: UI Vault). Si absent et service != 'vault', un
     lien Password Pusher sera généré automatiquement.
+    payload : contenu envoyé à Password Pusher (ex: kubeconfig complet). Par
+    défaut, login/secret/url.
     """
     _CREDS.append({
         "service": service,
@@ -27,6 +30,7 @@ def collect(
         "url": url or "",
         "note": note,
         "link": link,
+        "payload": payload,
     })
 
 
@@ -63,7 +67,7 @@ def flush():
     # Push secrets et récupérer liens
     for cred in _CREDS:
         display_url = cred.get("link") or cred["url"]
-        payload = (
+        payload = cred.get("payload") or (
             f"login: {cred['login']}\n"
             f"secret: {cred['secret']}\n"
             f"url: {display_url}\n"

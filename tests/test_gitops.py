@@ -265,3 +265,35 @@ def test_cli_add_environment_no_new_envs(tmp_path: Path):
     )
     assert res.exit_code == 0
     assert "Aucun nouvel environnement" in res.stdout 
+
+# ---------------------------------------------------------------------------
+# CLI setup-devs --write-kubeconfig (sans appels HTTP)
+# ---------------------------------------------------------------------------
+
+def _setup_devs_args(gitops: Path, out: Path) -> list:
+    return [
+        "setup-devs", "myproj", "--devs", "alice",
+        "--gitops-path", str(gitops), "--write-kubeconfig", str(out),
+    ]
+
+
+def test_cli_setup_devs_write_kubeconfig_rejects_file(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("KUBE_API", raising=False)
+    monkeypatch.delenv("KUBE_API_TOKEN", raising=False)
+    (tmp_path / "apps/myproj").mkdir(parents=True)
+    out = tmp_path / "configs"
+    out.write_text("not a directory")
+
+    res = CliRunner().invoke(app, _setup_devs_args(tmp_path, out))
+    assert res.exit_code == 1
+    assert "doit être un répertoire" in res.output
+
+
+def test_cli_setup_devs_write_kubeconfig_creates_dir(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("KUBE_API", raising=False)
+    monkeypatch.delenv("KUBE_API_TOKEN", raising=False)
+    (tmp_path / "apps/myproj").mkdir(parents=True)
+    out = tmp_path / "configs"
+
+    CliRunner().invoke(app, _setup_devs_args(tmp_path, out))
+    assert out.is_dir()

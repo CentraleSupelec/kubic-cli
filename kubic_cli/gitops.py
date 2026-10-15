@@ -42,7 +42,8 @@ def ensure_rbac(rbac_path: Path, slug: str, devs: List[str]):
     modified = False
     if not role_present:
         block = ["\n", f"{indent}# Auto-generated for {slug} – kubic-cli\n"]
-        for verb in ["create","delete","get","override","sync","update"]:
+        # No create/update: tenants must not change their Application spec (source type, destination)
+        for verb in ["delete","get","override","sync"]:
             block.append(f"{indent}p, role:{slug}, applications, {verb}, default/{slug}*, allow\n")
         block.append(f"{indent}g, {slug}, role:{slug}\n")
         for dev in devs:

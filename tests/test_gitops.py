@@ -48,6 +48,20 @@ def test_ensure_rbac_creates_role_and_mappings(tmp_path: Path):
     assert "g, bob, role:demo" in text
 
 
+def test_ensure_rbac_grants_no_create_or_update(tmp_path: Path):
+    rbac = tmp_path / "argocd-rbac-cm.yaml"
+    rbac.touch()
+
+    ensure_rbac(rbac, "demo", ["alice"])
+
+    verbs = {
+        l.split(",")[3].strip()
+        for l in rbac.read_text().splitlines()
+        if l.strip().startswith("p,")
+    }
+    assert verbs == {"delete", "get", "override", "sync"}
+
+
 def test_ensure_rbac_adds_missing_user(tmp_path: Path):
     rbac = tmp_path / "argocd-rbac-cm.yaml"
     rbac.write_text("    p, role:demo, applications, get, default/demo-*, allow\n    g, demo, role:demo\n")

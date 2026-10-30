@@ -1,9 +1,12 @@
 from pathlib import Path
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
-from kubic_cli.gitops import ensure_account, ensure_rbac
+import json
+
+from kubic_cli.gitops import ensure_account, ensure_rbac, generate_appprojects
 from kubic_cli.main import app
 
 
@@ -62,9 +65,49 @@ def test_ensure_rbac_grants_no_create_or_update(tmp_path: Path):
     assert verbs == {"delete", "get", "override", "sync"}
 
 
+def test_ensure_rbac_targets_the_project_not_default(tmp_path: Path):
+    rbac = tmp_path / "argocd-rbac-cm.yaml"
+    rbac.touch()
+
+    ensure_rbac(rbac, "demo", ["alice"])
+
+    objects = {
+        l.split(",")[4].strip()
+        for l in rbac.read_text().splitlines()
+        if l.strip().startswith("p,")
+    }
+    assert objects == {"demo*/demo*"}
+
+
+def test_generate_appprojects_runs_the_repo_script(tmp_path: Path):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    # Fake script: records its working directory
+    (scripts / "gen-appprojects.py").write_text(
+        "import os, pathlib; pathlib.Path('ran').write_text(os.getcwd()); print('1 AppProjects')\n"
+    )
+
+    generate_appprojects(tmp_path)
+
+    assert (tmp_path / "ran").read_text() == str(tmp_path)
+
+
+def test_generate_appprojects_fails_when_the_script_fails(tmp_path: Path):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "gen-appprojects.py").write_text("import sys; print('bad project'); sys.exit(1)\n")
+
+    with pytest.raises(typer.Exit):
+        generate_appprojects(tmp_path)
+
+
+def test_generate_appprojects_warns_without_script(tmp_path: Path):
+    generate_appprojects(tmp_path)  # no scripts/ in the repo: warning only, no exception
+
+
 def test_ensure_rbac_adds_missing_user(tmp_path: Path):
     rbac = tmp_path / "argocd-rbac-cm.yaml"
-    rbac.write_text("    p, role:demo, applications, get, default/demo-*, allow\n    g, demo, role:demo\n")
+    rbac.write_text("    p, role:demo, applications, get, demo*/demo*, allow\n    g, demo, role:demo\n")
 
     # Ajout d'un nouvel utilisateur charlie
     ensure_rbac(rbac, "demo", ["charlie"])
@@ -93,6 +136,7 @@ def test_cli_create_project_basic(tmp_path: Path):
     )
     assert res.exit_code == 0
     assert (tmp_path / "apps/myproj/prod.json").exists()
+    assert json.loads((tmp_path / "apps/myproj/prod.json").read_text())["project"] == "myproj"
 
 
 def test_cli_create_project_idempotent(tmp_path: Path):

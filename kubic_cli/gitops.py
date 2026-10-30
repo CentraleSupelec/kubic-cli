@@ -1,8 +1,10 @@
+import subprocess
+import sys
 from pathlib import Path
 from typing import List
 import typer
 
-__all__ = ["ensure_account", "ensure_rbac"]
+__all__ = ["ensure_account", "ensure_rbac", "generate_appprojects"]
 
 
 def ensure_account(cm_path: Path, user: str):
@@ -44,7 +46,8 @@ def ensure_rbac(rbac_path: Path, slug: str, devs: List[str]):
         block = ["\n", f"{indent}# Auto-generated for {slug} – kubic-cli\n"]
         # No create/update: tenants must not change their Application spec (source type, destination)
         for verb in ["delete","get","override","sync"]:
-            block.append(f"{indent}p, role:{slug}, applications, {verb}, default/{slug}*, allow\n")
+            # Each project has its own AppProject named <slug>: the default project holds no app
+            block.append(f"{indent}p, role:{slug}, applications, {verb}, {slug}*/{slug}*, allow\n")
         block.append(f"{indent}g, {slug}, role:{slug}\n")
         for dev in devs:
             block.append(f"{indent}g, {dev}, role:{slug}\n")
@@ -59,3 +62,16 @@ def ensure_rbac(rbac_path: Path, slug: str, devs: List[str]):
     if modified:
         rbac_path.write_text("".join(lines))
         typer.echo(f"[UPDATE] RBAC mis à jour pour {slug}")
+
+
+def generate_appprojects(gitops_path: Path):
+    """Regenerate the AppProjects of the GitOps repo from apps/<slug>/*.json."""
+    script = gitops_path / "scripts" / "gen-appprojects.py"
+    if not script.exists():
+        typer.secho(f"[WARN] {script} introuvable, AppProject non généré", fg=typer.colors.YELLOW)
+        return
+    r = subprocess.run([sys.executable, str(script)], cwd=gitops_path, capture_output=True, text=True)
+    if r.returncode != 0:
+        typer.secho(f"[ERROR] gen-appprojects.py a échoué :\n{r.stdout}{r.stderr}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+    typer.echo(f"[UPDATE] AppProjects : {r.stdout.strip()}")

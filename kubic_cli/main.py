@@ -88,9 +88,11 @@ def create_project(
             "valuesFiles": ["base.yaml", f"{env}.yaml"],
             "externalRepoURL": repo_url,
             "vaultCredentials": f"vault-token-{slug}",
+            "project": slug,
             "_generated_by": "kubic-cli",
         }
         safe_write(json_path, json.dumps(data, indent=2) + "\n")
+    gitops.generate_appprojects(gitops_path)
 
     # 2. Vault secret YAML (AppRole) - Éviter réécriture inutile
     if vault_addr:
@@ -496,9 +498,11 @@ def add_environment(
             "valuesFiles": ["base.yaml", f"{env}.yaml"],
             "externalRepoURL": repo_url,
             "vaultCredentials": f"vault-token-{slug}",
+            "project": slug,
             "_generated_by": "kubic-cli",
         }
         safe_write(json_path, json.dumps(data, indent=2) + "\n")
+    gitops.generate_appprojects(gitops_path)
     
     # 7. VAULT KV : Merger avec les environnements existants (la logique vault.provision fait déjà le merge)
     if skip_vault:

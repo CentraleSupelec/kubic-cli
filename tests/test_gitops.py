@@ -49,6 +49,8 @@ def test_ensure_rbac_creates_role_and_mappings(tmp_path: Path):
     assert "role:demo" in text
     assert "g, alice, role:demo" in text
     assert "g, bob, role:demo" in text
+    # The project itself is not a user: no mapping for the slug
+    assert "g, demo, role:demo" not in text
 
 
 def test_ensure_rbac_grants_no_create_or_update(tmp_path: Path):
@@ -355,3 +357,25 @@ def test_cli_setup_devs_write_kubeconfig_creates_dir(tmp_path: Path, monkeypatch
 
     CliRunner().invoke(app, _setup_devs_args(tmp_path, out))
     assert out.is_dir()
+
+
+def test_cli_create_project_creates_no_argocd_account_for_project(tmp_path: Path):
+    cm = tmp_path / "helm/argocd/templates/argocd-cm.yaml"
+    cm.parent.mkdir(parents=True)
+    cm.write_text("data:\n  accounts.admin: apiKey,login\n")
+
+    res = CliRunner().invoke(
+        app,
+        [
+            "create-project", "myproj",
+            "--repo-url", "git@gitlab.com:org/myproj.git",
+            "--envs", "prod",
+            "--devs", "alice",
+            "--gitops-path", str(tmp_path),
+            "--skip-vault",
+        ],
+    )
+    assert res.exit_code == 0, res.output
+    content = cm.read_text()
+    assert "accounts.alice:" in content
+    assert "accounts.myproj:" not in content

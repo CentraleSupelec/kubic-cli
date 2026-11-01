@@ -48,7 +48,6 @@ def ensure_rbac(rbac_path: Path, slug: str, devs: List[str]):
         for verb in ["delete","get","override","sync"]:
             # Each project has its own AppProject named <slug>: the default project holds no app
             block.append(f"{indent}p, role:{slug}, applications, {verb}, {slug}*/{slug}*, allow\n")
-        block.append(f"{indent}g, {slug}, role:{slug}\n")
         for dev in devs:
             block.append(f"{indent}g, {dev}, role:{slug}\n")
         lines.extend(block)

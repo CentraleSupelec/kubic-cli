@@ -112,7 +112,6 @@ def create_project(
 
     if dev_list:
         cm_path = gitops_path / "helm" / "argocd" / "templates" / "argocd-cm.yaml"
-        gitops.ensure_account(cm_path, slug)
         for dev in dev_list:
             gitops.ensure_account(cm_path, dev)
 

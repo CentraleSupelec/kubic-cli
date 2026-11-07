@@ -1,4 +1,4 @@
-"""External Secrets (CMP-37): JSON key, Vault store file and Vault role/policy of an app env.
+"""External Secrets: JSON key, Vault store file and Vault role/policy of an app env.
 
 Git (apps/<app>/<env>.json, key "externalSecrets.paths") is the source of truth;
 Vault is reconciled from it. Secret values are never read: existence checks use kv/metadata.
@@ -57,7 +57,7 @@ def store_file(gitops_path: Path, ns: str) -> Path:
 
 
 def store_content(ns: str) -> str:
-    return (f"# CMP-37: Vault store of namespace {ns} (helper in _helpers.tpl)\n"
+    return (f"# Vault store of namespace {ns} (helper in _helpers.tpl)\n"
             f'{{{{ include "argocd.vaultStore" (dict "ns" "{ns}" "root" $) }}}}\n')
 
 

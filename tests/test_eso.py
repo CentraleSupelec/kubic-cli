@@ -171,7 +171,7 @@ def test_enable_creates_everything_then_is_idempotent(gitops, monkeypatch):
     assert data["valuesFiles"] == ["base.yaml", "prod.yaml"]
     store = gitops / "helm/argocd/templates/external-secrets/demo-prod.yaml"
     assert store.read_text() == (
-        "# CMP-37: Vault store of namespace demo-prod (helper in _helpers.tpl)\n"
+        "# Vault store of namespace demo-prod (helper in _helpers.tpl)\n"
         '{{ include "argocd.vaultStore" (dict "ns" "demo-prod" "root" $) }}\n'
     )
     assert fake.data["sys/policies/acl/eso-demo-prod"]["policy"] == POLICY

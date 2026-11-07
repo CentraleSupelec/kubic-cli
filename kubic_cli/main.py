@@ -712,7 +712,7 @@ def add_dev(
 
 
 # ---------------------------------------------------------------------------
-# External Secrets (CMP-37)
+# External Secrets
 # ---------------------------------------------------------------------------
 
 eso_app = typer.Typer(help="External Secrets : clé JSON externalSecrets, store Vault et rôle/policy eso-<ns>", no_args_is_help=True)

@@ -150,8 +150,24 @@ Après avoir déployé via GitOps (commit → push → ArgoCD sync) :
 | `add-environment` | Ajoute des environnements à un projet existant |
 | `add-dev` | Ajoute des développeurs à un projet existant |
 | `setup-devs` | Génère tokens K8s et kubeconfigs pour développeurs existants |
+| `eso plan/enable/status/disable` | External Secrets : clé JSON, store Vault et rôle/policy `eso-<ns>` |
 
 Toutes les commandes sont **idempotentes** et peuvent être relancées sans risque.
+
+### External Secrets (ESO)
+
+Opt-in par environnement : clé `"externalSecrets": {"paths": ["<app>/shared", "<app>/<env>"]}` dans `apps/<app>/<env>.json` (chemins KV v2 sans `kv/data/`). Le JSON est la source de vérité : kubic-cli génère `helm/argocd/templates/external-secrets/<ns>.yaml` et réconcilie dans Vault la policy `eso-<ns>` (lecture seule sur ces chemins) et le rôle `auth/kubernetes/role/eso-<ns>` (SA `external-secrets-vault` du namespace). Les ExternalSecrets restent écrits par chaque équipe dans sa chart.
+
+```bash
+./kubic-cli eso plan myapp                              # lecture seule : chemins, store, diff Vault
+./kubic-cli eso enable myapp --env prod --dry-run        # n'écrit rien
+./kubic-cli eso enable myapp --env prod --path myapp/shared --path myapp/prod
+./kubic-cli eso status myapp                             # + ClusterSecretStore si --api-server/--api-token
+./kubic-cli eso disable myapp --env prod                 # refuse s'il reste des ExternalSecrets (sauf --force)
+./kubic-cli create-project myapp --repo-url ... --eso    # active ESO à la création
+```
+
+Sans clé JSON, `plan` propose les chemins des placeholders AVP `<path:kv/data/...>` trouvés dans les values (noms de clés seulement), sinon `<app>/shared` et `<app>/<env>`. Les valeurs des secrets ne sont jamais lues (`kv/metadata` uniquement).
 
 ### Aide détaillée
 

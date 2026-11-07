@@ -1,13 +1,14 @@
 import json
 import re
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import requests
 import typer
 import base64
 
 from . import cred, argo, vault, gitops
+from . import eso as eso_lib
 from .tpl import render_yaml
 from .utils import safe_write, get_ssh_host, gen_pwd, parse_existing_environments_from_k8s_yaml, smart_write, auto_detect_existing_developers, validate_project_exists, get_existing_environments, duration_to_seconds, generate_multi_environment_kubeconfig, is_new_developer, append_rolebindings_to_yaml
 from .config import DEFAULT_GITOPS_PATH
@@ -32,6 +33,7 @@ def create_project(
     api_token: Optional[str] = typer.Option(None, "--api-token", envvar="KUBE_API_TOKEN", help="Token Bearer pour l'API Kubernetes"),
     insecure: bool = typer.Option(False, "--insecure-skip-tls", help="Ne pas vérifier le certificat TLS du serveur API Kubernetes"),
     ca_file: Optional[Path] = typer.Option(None, "--cluster-ca", help="Chemin vers le certificat CA pour l'API Kubernetes"),
+    eso: bool = typer.Option(False, "--eso", help="Active External Secrets (chemins <slug>/shared et <slug>/<env>)"),
 ):
     """Crée les fichiers nécessaires (apps/, secrets Vault & Repository, compte ArgoCD).
     Création du namespace Kubernetes si --api-server et --api-token sont fournis.
@@ -181,6 +183,16 @@ def create_project(
         typer.echo("[INFO] Aucune adresse ou token Vault fourni : configuration Vault non effectuée")
     else:
         vault.provision(slug, env_list, addr=vault_addr, token=vault_token, devs=dev_list)
+
+    # 7. External Secrets: after vault.provision, which creates the kv paths
+    if eso:
+        ctx = eso_lib.VaultCtx(vault_addr, vault_token) if vault_addr and vault_token and not skip_vault else None
+        for env in env_list:
+            try:
+                eso_lib.enable(gitops_path, slug, env, None, ctx, assume_yes=True)
+            except eso_lib.EsoError as e:
+                typer.secho(f"[ERROR] ESO {env} : {e}", fg=typer.colors.RED)
+                raise typer.Exit(1)
 
     typer.secho("\nTerminé. N'oubliez pas de :\n - Commit & push les modifications du dépôt GitOps\n - Créer la deploy key et le webhook dans GitLab", fg=typer.colors.GREEN)
 
@@ -697,6 +709,114 @@ def add_dev(
     typer.echo(" - Utiliser 'setup-devs' pour générer les tokens/kubeconfigs")
 
     cred.flush()
+
+
+# ---------------------------------------------------------------------------
+# External Secrets (CMP-37)
+# ---------------------------------------------------------------------------
+
+eso_app = typer.Typer(help="External Secrets : clé JSON externalSecrets, store Vault et rôle/policy eso-<ns>", no_args_is_help=True)
+app.add_typer(eso_app, name="eso")
+
+_GITOPS_OPT = typer.Option(DEFAULT_GITOPS_PATH, "--gitops-path", exists=True, file_okay=False, dir_okay=True, help="Chemin du dépôt GitOps")
+_VAULT_ADDR_OPT = typer.Option(None, "--vault-addr", envvar="VAULT_ADDR", help="Adresse du serveur Vault")
+_VAULT_TOKEN_OPT = typer.Option(None, "--vault-token", envvar="VAULT_TOKEN", help="Token Vault ayant les droits d'admin")
+_API_SERVER_OPT = typer.Option(None, "--api-server", envvar="KUBE_API", help="URL du serveur API Kubernetes (lecture seule)")
+_API_TOKEN_OPT = typer.Option(None, "--api-token", envvar="KUBE_API_TOKEN", help="Token Bearer pour l'API Kubernetes")
+_INSECURE_OPT = typer.Option(False, "--insecure-skip-tls", help="Ne pas vérifier le certificat TLS de l'API")
+_CA_OPT = typer.Option(None, "--cluster-ca", help="Chemin vers le certificat CA pour l'API Kubernetes")
+
+
+def _eso_ctx(vault_addr, vault_token):
+    return eso_lib.VaultCtx(vault_addr, vault_token) if vault_addr and vault_token else None
+
+
+def _eso_kube(api_server, api_token, insecure, ca_file):
+    if not (api_server and api_token):
+        return None
+    return eso_lib.KubeCtx(api_server, api_token, verify=str(ca_file) if ca_file and ca_file.exists() else (not insecure))
+
+
+def _eso_envs(gitops_path: Path, slug: str, envs: Optional[str]) -> List[str]:
+    if not validate_project_exists(gitops_path, slug):
+        typer.secho(f"[ERROR] Projet '{slug}' introuvable dans {gitops_path}/apps/{slug}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+    return [e.strip() for e in envs.split(",") if e.strip()] if envs else eso_lib.list_envs(gitops_path, slug)
+
+
+def _eso_run(fn, *args, **kwargs):
+    try:
+        fn(*args, **kwargs)
+    except eso_lib.EsoError as e:
+        typer.secho(f"[ERROR] {e}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+
+@eso_app.command("plan")
+def eso_plan(
+    slug: str = typer.Argument(..., help="Identifiant du projet"),
+    envs: Optional[str] = typer.Option(None, "--env", help="Environnements séparés par des virgules (défaut : tous)"),
+    gitops_path: Path = _GITOPS_OPT,
+    vault_addr: Optional[str] = _VAULT_ADDR_OPT,
+    vault_token: Optional[str] = _VAULT_TOKEN_OPT,
+):
+    """Affiche chemins, store et diff Vault, sans rien écrire."""
+    _eso_run(eso_lib.plan, gitops_path, slug, _eso_envs(gitops_path, slug, envs), _eso_ctx(vault_addr, vault_token))
+
+
+@eso_app.command("enable")
+def eso_enable(
+    slug: str = typer.Argument(..., help="Identifiant du projet"),
+    env: str = typer.Option(..., "--env", help="Environnement"),
+    paths: Optional[List[str]] = typer.Option(None, "--path", help="Chemin KV v2 sans kv/data/ (répétable), défaut : clé JSON ou proposition"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="N'écrit rien (fichiers ni Vault)"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Ne pas demander confirmation avant d'écrire dans Vault"),
+    gitops_path: Path = _GITOPS_OPT,
+    vault_addr: Optional[str] = _VAULT_ADDR_OPT,
+    vault_token: Optional[str] = _VAULT_TOKEN_OPT,
+):
+    """Écrit la clé JSON et le store, puis réconcilie le rôle/policy Vault eso-<ns> (après diff)."""
+    _eso_envs(gitops_path, slug, env)
+    _eso_run(eso_lib.enable, gitops_path, slug, env, paths, _eso_ctx(vault_addr, vault_token), dry_run=dry_run, assume_yes=yes)
+    if not dry_run:
+        typer.echo("\nN'oubliez pas de commit & push les modifications du dépôt GitOps")
+
+
+@eso_app.command("status")
+def eso_status(
+    slug: str = typer.Argument(..., help="Identifiant du projet"),
+    gitops_path: Path = _GITOPS_OPT,
+    vault_addr: Optional[str] = _VAULT_ADDR_OPT,
+    vault_token: Optional[str] = _VAULT_TOKEN_OPT,
+    api_server: Optional[str] = _API_SERVER_OPT,
+    api_token: Optional[str] = _API_TOKEN_OPT,
+    insecure: bool = _INSECURE_OPT,
+    ca_file: Optional[Path] = _CA_OPT,
+):
+    """Clé JSON, store, sync Vault et état du ClusterSecretStore de chaque environnement."""
+    _eso_run(eso_lib.status, gitops_path, slug, _eso_envs(gitops_path, slug, None),
+             _eso_ctx(vault_addr, vault_token), _eso_kube(api_server, api_token, insecure, ca_file))
+
+
+@eso_app.command("disable")
+def eso_disable(
+    slug: str = typer.Argument(..., help="Identifiant du projet"),
+    env: str = typer.Option(..., "--env", help="Environnement"),
+    force: bool = typer.Option(False, "--force", help="Ignorer les ExternalSecrets encore présents"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="N'écrit rien (fichiers ni Vault)"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Ne pas demander confirmation avant de supprimer dans Vault"),
+    gitops_path: Path = _GITOPS_OPT,
+    vault_addr: Optional[str] = _VAULT_ADDR_OPT,
+    vault_token: Optional[str] = _VAULT_TOKEN_OPT,
+    api_server: Optional[str] = _API_SERVER_OPT,
+    api_token: Optional[str] = _API_TOKEN_OPT,
+    insecure: bool = _INSECURE_OPT,
+    ca_file: Optional[Path] = _CA_OPT,
+):
+    """Supprime store, clé JSON et rôle/policy Vault eso-<ns>."""
+    _eso_envs(gitops_path, slug, env)
+    _eso_run(eso_lib.disable, gitops_path, slug, env, _eso_ctx(vault_addr, vault_token),
+             _eso_kube(api_server, api_token, insecure, ca_file), force=force, dry_run=dry_run, assume_yes=yes)
 
 
 if __name__ == "__main__":

@@ -301,50 +301,6 @@ def test_is_new_developer(tmp_path: Path):
     assert utils.is_new_developer(tmp_path, "bob")
 
 
-def test_append_rolebindings_to_yaml(tmp_path: Path):
-    """Test appending RoleBindings to existing YAML file."""
-    yaml_file = tmp_path / "user-alice.yaml"
-
-    # Create initial file with ServiceAccount
-    initial_content = """apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: alice
-  namespace: default
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: alice-token
-  namespace: default
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: alice-dev
-  namespace: myapp-dev
-"""
-    yaml_file.write_text(initial_content)
-
-    # Append new RoleBinding
-    new_rolebinding = """---
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: alice-staging
-  namespace: myapp-staging
-"""
-    utils.append_rolebindings_to_yaml(yaml_file, new_rolebinding)
-
-    # Verify content was appended
-    final_content = yaml_file.read_text()
-    assert "alice-dev" in final_content
-    assert "alice-staging" in final_content
-
-    # Verify original content is still there
-    assert "kind: ServiceAccount" in final_content
-    assert "kind: Secret" in final_content 
-
 def test_cred_flush_pushes_custom_payload(monkeypatch):
     """A custom payload (e.g. a full kubeconfig) is pushed instead of login/secret/url."""
     from kubic_cli import cred

@@ -7,10 +7,9 @@ import requests
 import typer
 import base64
 
-from . import cred, argo, vault, gitops
+from . import cred, argo, vault, gitops, chart
 from . import eso as eso_lib
-from .tpl import render_yaml
-from .utils import safe_write, get_ssh_host, gen_pwd, parse_existing_environments_from_k8s_yaml, smart_write, auto_detect_existing_developers, validate_project_exists, get_existing_environments, duration_to_seconds, generate_multi_environment_kubeconfig, is_new_developer, append_rolebindings_to_yaml
+from .utils import safe_write, get_ssh_host, gen_pwd, parse_existing_environments_from_k8s_yaml, smart_write, auto_detect_existing_developers, validate_project_exists, get_existing_environments, duration_to_seconds, generate_multi_environment_kubeconfig, is_new_developer
 from .config import DEFAULT_GITOPS_PATH
 
 app = typer.Typer(
@@ -63,6 +62,27 @@ def _write_app_json(json_path: Path, slug: str, env: str, repo_url: str, eso: bo
     if eso:
         content = eso_lib.set_paths(content, eso_lib.default_paths(slug, env))
     safe_write(json_path, content, dry_run=dry_run)
+
+
+def _write_user_accounts(gitops_path: Path, slug: str, devs, new_file_envs, added_envs, dry_run: bool = False):
+    """One-line account file (helper argocd.k8sUser) per new dev with the namespaces of new_file_envs;
+    an existing file only gets the namespaces of added_envs it lacks."""
+    acc_dir = gitops_path / "helm" / "argocd" / "templates" / "k8s-accounts"
+    for dev in devs:
+        path = acc_dir / f"user-{dev}.yaml"
+        if not path.exists():
+            namespaces = [eso_lib.namespace(slug, env) for env in sorted(new_file_envs)]
+            smart_write(path, chart.user_content(dev, namespaces), dry_run=dry_run)
+            continue
+        namespaces = [eso_lib.namespace(slug, env) for env in sorted(added_envs)]
+        if dry_run:
+            missing = [ns for ns in namespaces if ns not in chart.user_namespaces(path.read_text())]
+            if missing:
+                typer.echo(f"[DRY-RUN] [UPDATE] {path} : RoleBindings {missing}")
+                continue
+        elif chart.add_user_namespaces(path, dev, namespaces):
+            continue
+        typer.echo(f"[INFO] Aucun nouvel environnement pour {dev}")
 
 
 @app.command()
@@ -149,16 +169,15 @@ def create_project(
         typer.echo(f"[INFO] Mode ESO : vault-token-{slug}.yaml non géré")
     elif vault_addr:
         vault_dir = gitops_path / "helm" / "argocd" / "templates" / "vault"
-        vault_content = render_yaml("vault-token.yaml.j2", slug=slug, vault_addr=vault_addr)
-        smart_write(vault_dir / f"vault-token-{slug}.yaml", vault_content, dry_run=dry_run)
+        smart_write(vault_dir / f"vault-token-{slug}.yaml", chart.vault_token_content(slug), dry_run=dry_run)
     else:
         typer.echo("[INFO] Aucun vault-addr fourni : Vault secret YAML non généré")
 
     # 3. repository secret - Éviter réécriture inutile
     repo_secret_dir = gitops_path / "helm" / "argocd" / "templates" / "repository"
     ssh_host = get_ssh_host(repo_url)
-    repo_content = render_yaml("repository-secret.yaml.j2", slug=slug, repo_url=repo_url, ssh_host=ssh_host)
-    smart_write(repo_secret_dir / f"repository-{slug}.yaml", repo_content, dry_run=dry_run)
+    smart_write(repo_secret_dir / f"repository-{slug}.yaml", chart.repository_content(slug, repo_url, ssh_host),
+                dry_run=dry_run)
 
     dev_list = [d.strip() for d in devs.split(",") if d.strip()] if devs else []
 
@@ -170,59 +189,8 @@ def create_project(
         rbac_path = gitops_path / "helm" / "argocd" / "templates" / "argocd-rbac-cm.yaml"
         gitops.ensure_rbac(rbac_path, slug, dev_list, dry_run=dry_run)
 
-        # 5ter. Fichiers K8s ServiceAccount pour chaque dev - Logique incrémentale
-        k8s_acc_dir = gitops_path / "helm" / "argocd" / "templates" / "k8s-accounts"
-        for dev in dev_list:
-            user_yaml_file = k8s_acc_dir / f"user-{dev}.yaml"
-
-            if is_new_developer(gitops_path, dev):
-                # Nouveau développeur : créer le fichier complet
-                typer.echo(f"[INFO] Nouveau développeur {dev} : création complète")
-
-                # ServiceAccount + Secret
-                sa_content = render_yaml("k8s-serviceaccount.yaml.j2", user=dev)
-                secret_content = render_yaml("k8s-secret.yaml.j2", user=dev)
-
-                # RoleBindings pour tous les environnements
-                rolebindings = []
-                for env in sorted(env_list):
-                    rb = render_yaml("k8s-rolebinding.yaml.j2", user=dev, slug=slug, env=env)
-                    rolebindings.append(rb)
-
-                # Assembler tout le contenu
-                full_content = sa_content
-                if not full_content.endswith('\n'):
-                    full_content += '\n'
-                full_content += "---\n" + secret_content
-                for rb in rolebindings:
-                    if not full_content.endswith('\n'):
-                        full_content += '\n'
-                    full_content += "---\n" + rb
-
-                smart_write(user_yaml_file, full_content, overwrite=False, dry_run=dry_run)
-            else:
-                # Développeur existant : ajouter seulement les nouveaux RoleBindings
-                existing_envs = parse_existing_environments_from_k8s_yaml(user_yaml_file, dev, slug)
-                new_envs = set(env_list) - existing_envs
-
-                if new_envs:
-                    typer.echo(f"[INFO] Ajout environnements pour {dev} : {sorted(new_envs)}")
-
-                    # Générer les nouveaux RoleBindings
-                    rolebindings_content = ""
-                    for env in sorted(new_envs):
-                        rb = render_yaml("k8s-rolebinding.yaml.j2", user=dev, slug=slug, env=env)
-                        if rolebindings_content and not rolebindings_content.endswith('\n'):
-                            rolebindings_content += '\n'
-                        rolebindings_content += "---\n" + rb
-
-                    # Ajouter à la fin du fichier existant
-                    if dry_run:
-                        typer.echo(f"[DRY-RUN] [APPEND] RoleBindings {sorted(new_envs)} dans {user_yaml_file}")
-                    else:
-                        append_rolebindings_to_yaml(user_yaml_file, rolebindings_content)
-                else:
-                    typer.echo(f"[INFO] Aucun nouvel environnement pour {dev}")
+        # 5ter. One-line K8s account file per dev, or new namespaces added to it
+        _write_user_accounts(gitops_path, slug, dev_list, env_list, env_list, dry_run=dry_run)
 
         typer.echo("[INFO] Utilisez 'setup-devs' après le déploiement pour générer les tokens/kubeconfigs")
 
@@ -578,55 +546,7 @@ def add_environment(
     
     # 8. ROLEBINDINGS K8S : Ajouter les nouveaux environnements pour les développeurs existants
     if dev_list:
-        k8s_acc_dir = gitops_path / "helm" / "argocd" / "templates" / "k8s-accounts"
-        for dev in dev_list:
-            user_yaml_file = k8s_acc_dir / f"user-{dev}.yaml"
-
-            if not user_yaml_file.exists():
-                typer.secho(f"[WARN] Fichier {user_yaml_file} introuvable pour {dev}, création complète", fg=typer.colors.YELLOW)
-
-                # Créer le fichier complet avec tous les environnements
-                sa_content = render_yaml("k8s-serviceaccount.yaml.j2", user=dev)
-                secret_content = render_yaml("k8s-secret.yaml.j2", user=dev)
-
-                rolebindings = []
-                all_envs = sorted(existing_envs | really_new)
-                for env in all_envs:
-                    rb = render_yaml("k8s-rolebinding.yaml.j2", user=dev, slug=slug, env=env)
-                    rolebindings.append(rb)
-
-                full_content = sa_content
-                if not full_content.endswith('\n'):
-                    full_content += '\n'
-                full_content += "---\n" + secret_content
-                for rb in rolebindings:
-                    if not full_content.endswith('\n'):
-                        full_content += '\n'
-                    full_content += "---\n" + rb
-
-                smart_write(user_yaml_file, full_content, overwrite=False)
-            else:
-                # Développeur existant : ajouter seulement les nouveaux RoleBindings
-                existing_dev_envs = parse_existing_environments_from_k8s_yaml(user_yaml_file, dev, slug)
-
-                # Nouveaux environnements pour ce développeur
-                new_envs_for_dev = really_new - existing_dev_envs
-
-                if new_envs_for_dev:
-                    typer.echo(f"[INFO] Ajout RoleBindings pour {dev}: {sorted(new_envs_for_dev)}")
-
-                    # Générer les nouveaux RoleBindings
-                    rolebindings_content = ""
-                    for env in sorted(new_envs_for_dev):
-                        rb = render_yaml("k8s-rolebinding.yaml.j2", user=dev, slug=slug, env=env)
-                        if rolebindings_content and not rolebindings_content.endswith('\n'):
-                            rolebindings_content += '\n'
-                        rolebindings_content += "---\n" + rb
-
-                    # Ajouter à la fin du fichier existant
-                    append_rolebindings_to_yaml(user_yaml_file, rolebindings_content)
-                else:
-                    typer.echo(f"[INFO] {dev} a déjà accès à tous les environnements")
+        _write_user_accounts(gitops_path, slug, dev_list, existing_envs | really_new, really_new)
     
     typer.secho(f"\n✅ Environnements {sorted(really_new)} ajoutés avec succès au projet '{slug}'", fg=typer.colors.GREEN)
     if dev_list:
@@ -714,34 +634,8 @@ def add_dev(
     rbac_path = gitops_path / "helm" / "argocd" / "templates" / "argocd-rbac-cm.yaml"
     gitops.ensure_rbac(rbac_path, slug, list(really_new))
 
-    # 6. K8S SERVICEACCOUNT : Créer les fichiers pour chaque nouveau développeur
-    k8s_acc_dir = gitops_path / "helm" / "argocd" / "templates" / "k8s-accounts"
-    for dev in sorted(really_new):
-        user_yaml_file = k8s_acc_dir / f"user-{dev}.yaml"
-
-        typer.echo(f"[INFO] Création fichier K8s complet pour {dev}")
-
-        # ServiceAccount + Secret
-        sa_content = render_yaml("k8s-serviceaccount.yaml.j2", user=dev)
-        secret_content = render_yaml("k8s-secret.yaml.j2", user=dev)
-
-        # RoleBindings pour tous les environnements existants
-        rolebindings = []
-        for env in sorted(existing_envs):
-            rb = render_yaml("k8s-rolebinding.yaml.j2", user=dev, slug=slug, env=env)
-            rolebindings.append(rb)
-
-        # Assembler tout le contenu
-        full_content = sa_content
-        if not full_content.endswith('\n'):
-            full_content += '\n'
-        full_content += "---\n" + secret_content
-        for rb in rolebindings:
-            if not full_content.endswith('\n'):
-                full_content += '\n'
-            full_content += "---\n" + rb
-
-        smart_write(user_yaml_file, full_content, overwrite=False)
+    # 6. K8S SERVICEACCOUNT : fichier pour chaque nouveau développeur, namespaces du projet pour les autres
+    _write_user_accounts(gitops_path, slug, sorted(really_new), existing_envs, existing_envs)
 
     # 7. VAULT : Configuration pour les nouveaux développeurs
     if skip_vault:

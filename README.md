@@ -90,6 +90,8 @@ shared-k8s-prd/
             └── vault/
 ```
 
+Les fichiers écrits dans `repository/`, `vault/` et `k8s-accounts/` tiennent en une ligne qui appelle un helper de `_helpers.tpl` (`argocd.repository`, `argocd.vaultToken`, `argocd.k8sUser`). Un `user-<dev>.yaml` existant en YAML complet (ancien format) reçoit ses nouveaux RoleBindings en fin de fichier.
+
 ---
 
 ## Utilisation rapide

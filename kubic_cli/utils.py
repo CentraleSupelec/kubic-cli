@@ -3,7 +3,9 @@ import secrets
 import string
 import typer
 
-__all__ = ["safe_write", "get_ssh_host", "gen_pwd", "parse_existing_environments_from_k8s_yaml", "smart_write", "auto_detect_existing_developers", "validate_project_exists", "get_existing_environments", "duration_to_seconds", "generate_multi_environment_kubeconfig", "is_new_developer", "append_rolebindings_to_yaml"]
+from . import chart
+
+__all__ = ["safe_write", "get_ssh_host", "gen_pwd", "parse_existing_environments_from_k8s_yaml", "smart_write", "auto_detect_existing_developers", "validate_project_exists", "get_existing_environments", "duration_to_seconds", "generate_multi_environment_kubeconfig", "is_new_developer"]
 
 def safe_write(path: Path, content: str, overwrite: bool = False, dry_run: bool = False):
     """Write *content* to *path* except if it already exists (unless overwrite=True).
@@ -43,66 +45,16 @@ def gen_pwd(length: int = 20) -> str:
 
 
 def parse_existing_environments_from_k8s_yaml(yaml_file: Path, user: str, slug: str) -> set:
-    """Parse existing environments from K8s ServiceAccount YAML file.
-
-    Looks for RoleBinding resources in namespaces matching pattern: {slug}-{env}
-    Returns set of environment names found.
-
-    Note: Works with new format where RoleBinding name is just the username,
-    not username-env (changed to fix metadata naming conventions).
-    """
+    """Environments of <slug> that <user> reaches: its RoleBinding namespaces <slug> or <slug>-<env>."""
     if not yaml_file.exists():
         return set()
-
-    try:
-        content = yaml_file.read_text()
-        envs = set()
-
-        # Look for RoleBinding patterns like:
-        # kind: RoleBinding
-        # metadata:
-        #   name: alice
-        #   namespace: myapp-dev
-        lines = content.split('\n')
-        in_rolebinding = False
-        in_metadata = False
-
-        for line in lines:
-            stripped = line.strip()
-
-            # Detect RoleBinding start
-            if stripped.startswith('kind:') and 'RoleBinding' in stripped:
-                in_rolebinding = True
-                continue
-
-            # Detect metadata section
-            if in_rolebinding and stripped.startswith('metadata:'):
-                in_metadata = True
-                continue
-
-            # End of metadata section (subjects, roleRef, or new document)
-            if in_metadata and (stripped.startswith('subjects:') or stripped.startswith('roleRef:') or stripped.startswith('---')):
-                in_metadata = False
-                in_rolebinding = False
-                continue
-
-            # Parse namespace in metadata section
-            if in_metadata and stripped.startswith('namespace:'):
-                namespace_value = stripped.split(':', 1)[1].strip()
-                # Namespace equal to slug means env == slug (no suffix)
-                if namespace_value == slug:
-                    envs.add(slug)
-                # Extract env from namespace like "myapp-dev" -> "dev"
-                elif namespace_value.startswith(f'{slug}-'):
-                    env = namespace_value[len(f'{slug}-'):]
-                    if env:  # Avoid empty strings
-                        envs.add(env)
-
-        return envs
-
-    except Exception as e:
-        typer.secho(f"[WARN] Could not parse existing environments from {yaml_file}: {e}", fg=typer.colors.YELLOW)
-        return set()
+    envs = set()
+    for ns in chart.user_namespaces(yaml_file.read_text()):
+        if ns == slug:
+            envs.add(slug)
+        elif ns.startswith(f"{slug}-") and ns != f"{slug}-":
+            envs.add(ns[len(slug) + 1:])
+    return envs
 
 
 def smart_write(path: Path, content: str, overwrite: bool = False, dry_run: bool = False):
@@ -147,8 +99,7 @@ def auto_detect_existing_developers(gitops_path: Path, slug: str) -> list:
             
             # Validate it's actually for this project by checking content
             try:
-                content = user_file.read_text()
-                if f"namespace: {slug}-" in content:  # Should have namespaces like myapp-dev
+                if any(ns.startswith(f"{slug}-") for ns in chart.user_namespaces(user_file.read_text())):
                     detected_devs.add(user_name)
             except Exception as e:
                 typer.secho(f"[WARN] Could not parse {user_file}: {e}", fg=typer.colors.YELLOW)
@@ -289,30 +240,3 @@ def is_new_developer(gitops_path: Path, dev: str) -> bool:
     k8s_acc_dir = gitops_path / "helm" / "argocd" / "templates" / "k8s-accounts"
     user_yaml_file = k8s_acc_dir / f"user-{dev}.yaml"
     return not user_yaml_file.exists()
-
-
-def append_rolebindings_to_yaml(yaml_file: Path, rolebindings_content: str):
-    """Append RoleBinding YAML content to an existing K8s account file.
-
-    This function appends new RoleBindings to the end of the file without
-    modifying the existing ServiceAccount and Secret objects.
-
-    Args:
-        yaml_file: Path to the existing user YAML file
-        rolebindings_content: YAML content for the new RoleBindings (with --- separators)
-    """
-    if not yaml_file.exists():
-        typer.secho(f"[ERROR] File {yaml_file} does not exist", fg=typer.colors.RED)
-        return
-
-    existing_content = yaml_file.read_text()
-
-    # Ensure existing content ends with a newline
-    if not existing_content.endswith('\n'):
-        existing_content += '\n'
-
-    # Append new rolebindings
-    new_content = existing_content + rolebindings_content
-
-    yaml_file.write_text(new_content)
-    typer.echo(f"[APPEND] RoleBindings added to {yaml_file}")

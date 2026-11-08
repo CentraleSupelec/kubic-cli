@@ -18,14 +18,14 @@ def _reset_config_env():
 def test_render_yaml_adds_header():
     _reset_config_env()
     head = cfg.YAML_HEADER
-    content = render_yaml("vault-token.yaml.j2", slug="demo")
+    content = render_yaml("k8s-rolebinding.yaml.j2", user="alice", namespace="demo-prod")
     assert content.startswith(head)
 
 
 def test_render_yaml_no_duplicate_header():
     _reset_config_env()
     head = cfg.YAML_HEADER
-    body = render_yaml("vault-token.yaml.j2", slug="demo")
+    body = render_yaml("k8s-rolebinding.yaml.j2", user="alice", namespace="demo-prod")
     # header présent
     assert body.startswith(head)
     # pas de duplication

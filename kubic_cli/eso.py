@@ -13,7 +13,7 @@ import typer
 
 from . import vault
 
-__all__ = ["EsoError", "namespace", "read_paths", "set_paths", "default_paths", "target_paths", "store_content",
+__all__ = ["EsoError", "namespace", "read_paths", "set_key", "set_paths", "default_paths", "target_paths", "store_content",
            "store_in_sync", "desired_policy", "policy_in_sync", "role_diff", "reconcile_vault", "ensure"]
 
 ESO_KEY = "externalSecrets"
@@ -96,19 +96,23 @@ def read_paths(text: str) -> Optional[List[str]]:
     return value["paths"]
 
 
-def set_paths(text: str, paths: List[str]) -> str:
-    """Set the key in place, leaving the rest of the file byte-identical."""
-    value = json.dumps({"paths": paths}, ensure_ascii=False)
+def set_key(text: str, key: str, value) -> str:
+    """Set a top-level key in place, leaving the rest of the file byte-identical."""
+    value = json.dumps(value, ensure_ascii=False)
     members, close = _members(text)
-    for key, _, start, end in members:
-        if key == ESO_KEY:
+    for k, _, start, end in members:
+        if k == key:
             return text[:start] + value + text[end:]
     if not members:
-        return text[:close].rstrip() + f'\n  "{ESO_KEY}": {value}\n' + text[close:]
+        return text[:close].rstrip() + f'\n  "{key}": {value}\n' + text[close:]
     first_start = members[0][1]
     indent = text[text.rfind("\n", 0, first_start) + 1:first_start]
     last_end = members[-1][3]
-    return text[:last_end] + f',\n{indent}"{ESO_KEY}": {value}' + text[last_end:]
+    return text[:last_end] + f',\n{indent}"{key}": {value}' + text[last_end:]
+
+
+def set_paths(text: str, paths: List[str]) -> str:
+    return set_key(text, ESO_KEY, {"paths": paths})
 
 
 def default_paths(app: str, env: str) -> List[str]:

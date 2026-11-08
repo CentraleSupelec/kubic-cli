@@ -18,10 +18,11 @@ def request(method: str, url: str, token: str, json=None, verify: bool = True):
 
 
 def provision(slug: str, envs: List[str], addr: str, token: str, verify: bool = True, devs: Optional[List[str]] = None,
-              dry_run: bool = False):
+              dry_run: bool = False, avp: bool = True):
     """Regroupe toute la logique Vault (policy, approle, kv, userpass).
 
     dry_run : aucune écriture, et existence des secrets via kv/metadata (valeurs jamais lues).
+    avp : False = pas d'AppRole ni de kv/argocd/avp/<slug> (mode ESO) ; un existant n'est jamais touché.
     """
 
     base = addr.rstrip("/") + "/v1"
@@ -44,33 +45,36 @@ def provision(slug: str, envs: List[str], addr: str, token: str, verify: bool = 
             request("PUT", f"{base}/sys/policies/acl/{slug}", token, json={"policy": policy_hcl}, verify=verify)
         typer.echo(f"{pre}[WRITE] Vault policy {slug}")
 
-    # AppRole - Préserver les credentials existants
-    try:
-        request("GET", f"{base}/auth/approle/role/{slug}", token, verify=verify)
-        typer.echo(f"[EXISTS] AppRole {slug}")
-        
-        # Vérifier si les credentials AVP existent déjà
+    # AppRole AVP - Préserver les credentials existants (mode --avp uniquement)
+    if not avp:
+        typer.echo(f"[INFO] Mode ESO : AppRole {slug} et kv/argocd/avp/{slug} non gérés")
+    else:
         try:
-            request("GET", f"{base}/kv/{kv_check}/argocd/avp/{slug}", token, verify=verify)
-            typer.echo(f"[EXISTS] AVP credentials kv/argocd/avp/{slug} (preserved)")
+            request("GET", f"{base}/auth/approle/role/{slug}", token, verify=verify)
+            typer.echo(f"[EXISTS] AppRole {slug}")
+
+            # Vérifier si les credentials AVP existent déjà
+            try:
+                request("GET", f"{base}/kv/{kv_check}/argocd/avp/{slug}", token, verify=verify)
+                typer.echo(f"[EXISTS] AVP credentials kv/argocd/avp/{slug} (preserved)")
+            except RuntimeError:
+                # Seulement si pas d'AVP secrets, en créer de nouveaux
+                if not dry_run:
+                    role_id = request("GET", f"{base}/auth/approle/role/{slug}/role-id", token, verify=verify)["data"]["role_id"]
+                    secret_id = request("POST", f"{base}/auth/approle/role/{slug}/secret-id", token, json={}, verify=verify)["data"]["secret_id"]
+                    request("PUT", f"{base}/kv/data/argocd/avp/{slug}", token, json={"data": {"role_id": role_id, "secret_id": secret_id}}, verify=verify)
+                typer.echo(f"{pre}[WRITE] AVP credentials kv/argocd/avp/{slug}")
+
         except RuntimeError:
-            # Seulement si pas d'AVP secrets, en créer de nouveaux
+            # Créer tout si rien n'existe
+            if not dry_run:
+                request("POST", f"{base}/auth/approle/role/{slug}", token, json={"token_policies": [slug]}, verify=verify)
+            typer.echo(f"{pre}[WRITE] AppRole {slug}")
             if not dry_run:
                 role_id = request("GET", f"{base}/auth/approle/role/{slug}/role-id", token, verify=verify)["data"]["role_id"]
                 secret_id = request("POST", f"{base}/auth/approle/role/{slug}/secret-id", token, json={}, verify=verify)["data"]["secret_id"]
                 request("PUT", f"{base}/kv/data/argocd/avp/{slug}", token, json={"data": {"role_id": role_id, "secret_id": secret_id}}, verify=verify)
             typer.echo(f"{pre}[WRITE] AVP credentials kv/argocd/avp/{slug}")
-            
-    except RuntimeError:
-        # Créer tout si rien n'existe
-        if not dry_run:
-            request("POST", f"{base}/auth/approle/role/{slug}", token, json={"token_policies": [slug]}, verify=verify)
-        typer.echo(f"{pre}[WRITE] AppRole {slug}")
-        if not dry_run:
-            role_id = request("GET", f"{base}/auth/approle/role/{slug}/role-id", token, verify=verify)["data"]["role_id"]
-            secret_id = request("POST", f"{base}/auth/approle/role/{slug}/secret-id", token, json={}, verify=verify)["data"]["secret_id"]
-            request("PUT", f"{base}/kv/data/argocd/avp/{slug}", token, json={"data": {"role_id": role_id, "secret_id": secret_id}}, verify=verify)
-        typer.echo(f"{pre}[WRITE] AVP credentials kv/argocd/avp/{slug}")
 
     # Dossiers shared/envs - Merger avec les environnements existants
     try:

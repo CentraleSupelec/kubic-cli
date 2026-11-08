@@ -280,7 +280,7 @@ def test_create_project_dry_run_writes_nothing(tmp_path: Path, monkeypatch):
     assert fake.writes == []
     assert not any(tmp_path.rglob("*"))
     assert "[DRY-RUN] [WRITE] Vault policy eso-demo-prod" in r.output
-    assert "[DRY-RUN] [WRITE] AppRole demo" in r.output
+    assert "AppRole demo" not in r.output.replace("Mode ESO : AppRole demo", "")
 
 
 def test_create_project_dry_run_on_synced_project(tmp_path: Path, monkeypatch):
@@ -310,3 +310,111 @@ def test_create_project_refuses_operator_namespace(tmp_path: Path, monkeypatch):
                                  "--envs", "external-secrets", "--gitops-path", str(tmp_path), *VAULT_OPTS])
     assert r.exit_code == 1
     assert fake.calls == [] and not any(tmp_path.rglob("*"))
+
+
+# ---------------------------------------------------------------------------
+# --eso (default) / --avp
+# ---------------------------------------------------------------------------
+
+TOKEN_FILE = "helm/argocd/templates/vault/vault-token-demo.yaml"
+AVP_PATHS = ("auth/approle/", "kv/data/argocd/avp/", "kv/metadata/argocd/avp/")
+
+
+def _files(root: Path):
+    return {p: p.read_text() for p in root.rglob("*") if p.is_file()}
+
+
+def test_eso_new_project_has_no_avp_piece(tmp_path: Path, monkeypatch):
+    fake = _fake(monkeypatch, strict=False)
+    r = _create(tmp_path, *VAULT_OPTS, "--eso")
+    assert r.exit_code == 0, r.output
+    data = json.loads((tmp_path / "apps/demo/prod.json").read_text())
+    assert "vaultCredentials" not in data
+    assert data["externalSecrets"] == {"paths": ["demo/shared", "demo/prod"]}
+    assert not (tmp_path / TOKEN_FILE).exists()
+    assert not [c for c in fake.calls if c[1].startswith(AVP_PATHS)]
+    assert (tmp_path / STORE).exists()
+    assert "auth/kubernetes/role/eso-demo-prod" in fake.data
+
+
+def test_avp_new_project_is_old_model_without_eso(tmp_path: Path, monkeypatch):
+    fake = _fake(monkeypatch, strict=False)
+    r = _create(tmp_path, *VAULT_OPTS, "--avp")
+    assert r.exit_code == 0, r.output
+    jf = tmp_path / "apps/demo/prod.json"
+    assert json.loads(jf.read_text()) == {
+        "valuesFiles": ["base.yaml", "prod.yaml"], "externalRepoURL": "git@host:demo.git",
+        "vaultCredentials": "vault-token-demo", "project": "demo", "_generated_by": "kubic-cli"}
+    assert (tmp_path / TOKEN_FILE).exists()
+    assert {"auth/approle/role/demo", "kv/data/argocd/avp/demo"} <= {p for _, p in fake.writes}
+    assert not (tmp_path / "helm/argocd/templates/external-secrets").exists()
+    assert not [c for c in fake.calls if "eso-" in c[1]]
+
+
+def test_eso_rerun_on_avp_project_keeps_avp(tmp_path: Path, monkeypatch):
+    fake = _fake(monkeypatch, strict=False)
+    assert _create(tmp_path, *VAULT_OPTS, "--avp").exit_code == 0
+    token_file = (tmp_path / TOKEN_FILE).read_text()
+    avp_state = {k: v for k, v in fake.data.items() if k.startswith(AVP_PATHS)}
+    n = len(fake.calls)
+    r = _create(tmp_path, *VAULT_OPTS)
+    assert r.exit_code == 0, r.output
+    data = json.loads((tmp_path / "apps/demo/prod.json").read_text())
+    assert data["vaultCredentials"] == "vault-token-demo"
+    assert data["externalSecrets"] == {"paths": ["demo/shared", "demo/prod"]}
+    assert (tmp_path / TOKEN_FILE).read_text() == token_file
+    assert {k: v for k, v in fake.data.items() if k.startswith(AVP_PATHS)} == avp_state
+    assert not [c for c in fake.calls[n:] if c[1].startswith(AVP_PATHS) or c[0] == "DELETE"]
+
+
+def test_avp_rerun_on_eso_project_keeps_eso(tmp_path: Path, monkeypatch):
+    fake = _fake(monkeypatch, strict=False)
+    assert _create(tmp_path, *VAULT_OPTS).exit_code == 0
+    store = (tmp_path / STORE).read_text()
+    eso_state = {k: v for k, v in fake.data.items() if "eso-" in k}
+    n = len(fake.calls)
+    r = _create(tmp_path, *VAULT_OPTS, "--avp")
+    assert r.exit_code == 0, r.output
+    jf = tmp_path / "apps/demo/prod.json"
+    data = json.loads(jf.read_text())
+    assert data["externalSecrets"] == {"paths": ["demo/shared", "demo/prod"]}
+    assert data["vaultCredentials"] == "vault-token-demo"
+    assert (tmp_path / STORE).read_text() == store
+    assert {k: v for k, v in fake.data.items() if "eso-" in k} == eso_state
+    assert not [c for c in fake.calls[n:] if "eso-" in c[1] or c[0] == "DELETE"]
+    assert (tmp_path / TOKEN_FILE).exists()
+    # Third run: nothing more to add
+    files = _files(tmp_path)
+    assert _create(tmp_path, *VAULT_OPTS, "--avp").exit_code == 0
+    assert _files(tmp_path) == files
+
+
+def _add_env(gitops_path, *extra):
+    return CliRunner().invoke(app, ["add-environment", "demo", "--envs", "preprod",
+                                    "--gitops-path", str(gitops_path), *VAULT_OPTS, *extra])
+
+
+@pytest.mark.parametrize("flag", ["--eso", "--avp"])
+def test_add_environment_follows_mode(tmp_path: Path, monkeypatch, flag):
+    fake = _fake(monkeypatch, strict=False)
+    assert _create(tmp_path, *VAULT_OPTS, flag).exit_code == 0
+    n = len(fake.calls)
+    r = _add_env(tmp_path, flag)
+    assert r.exit_code == 0, r.output
+    data = json.loads((tmp_path / "apps/demo/preprod.json").read_text())
+    store = tmp_path / "helm/argocd/templates/external-secrets/demo-preprod.yaml"
+    if flag == "--eso":
+        assert "vaultCredentials" not in data and data["externalSecrets"]["paths"] == ["demo/shared", "demo/preprod"]
+        assert store.exists() and "auth/kubernetes/role/eso-demo-preprod" in fake.data
+        assert not [c for c in fake.calls[n:] if c[1].startswith(AVP_PATHS)]
+    else:
+        assert data["vaultCredentials"] == "vault-token-demo" and "externalSecrets" not in data
+        assert not store.exists() and not [c for c in fake.calls[n:] if "eso-" in c[1]]
+
+
+def test_add_environment_eso_warns_on_avp_project(tmp_path: Path, monkeypatch):
+    _fake(monkeypatch, strict=False)
+    assert _create(tmp_path, *VAULT_OPTS, "--avp").exit_code == 0
+    r = _add_env(tmp_path)
+    assert r.exit_code == 0, r.output
+    assert "[WARN] Projet existant en AVP" in r.output

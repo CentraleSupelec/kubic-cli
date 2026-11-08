@@ -112,13 +112,18 @@ shared-k8s-prd/
 - ✅ Vault policies et userpass pour les développeurs
 - ✅ External Secrets : clé `externalSecrets` du JSON, store Vault et rôle/policy `eso-<ns>` (voir plus bas)
 
+Mode par défaut `--eso` : aucune pièce argocd-vault-plugin (AVP) n'est créée pour un nouveau projet (pas d'AppRole, pas de `kv/argocd/avp/<slug>`, pas de `vault-token-<slug>.yaml`, pas de `vaultCredentials` dans les JSON). `--avp` garde l'ancien modèle à l'identique, sans étape ESO (voir « AVP ou ESO » plus bas).
+
 Relancer `create-project` sur un projet existant est sans risque : seul ce qui manque est créé (c'est ainsi qu'on migre une app existante vers External Secrets). `--dry-run` affiche les actions prévues sans rien écrire (fichiers, Vault, cluster).
 
 ### Ajouter un environnement
 
 ```bash
-./kubic-cli add-environment myapp --envs preprod
+./kubic-cli add-environment myapp --envs preprod          # --eso par défaut
+./kubic-cli add-environment myapp --envs preprod --avp    # projet resté en AVP
 ```
+
+Mêmes modes que `create-project`, pour les seuls nouveaux environnements. Un avertissement s'affiche si `--eso` est utilisé sur un projet dont les JSON ont un `vaultCredentials`.
 
 ### Ajouter un développeur
 
@@ -170,6 +175,20 @@ Le JSON est la source de vérité. Refusés : le namespace `external-secrets` de
 ./kubic-cli create-project myapp --repo-url ... --envs preprod,prod --dry-run   # lecture seule
 ./kubic-cli create-project myapp --repo-url ... --envs preprod,prod             # applique
 ```
+
+### AVP ou ESO (`--eso` / `--avp`)
+
+| | `--eso` (défaut) | `--avp` |
+|---|---|---|
+| JSON `apps/<app>/<env>.json` | `externalSecrets`, pas de `vaultCredentials` | `vaultCredentials: vault-token-<slug>`, pas d'`externalSecrets` |
+| Vault | policy `<slug>`, kv `<slug>/*`, userpass, policy/rôle `eso-<ns>` | policy `<slug>`, kv `<slug>/*`, userpass, AppRole `<slug>` et `kv/argocd/avp/<slug>` |
+| GitOps | store `external-secrets/<ns>.yaml` | `vault/vault-token-<slug>.yaml` |
+
+**Prérequis du mode `--eso` :** sur shared-k8s-prd, une app sans `vaultCredentials` doit être rendue sans AVP (plugin `helm-plain`), sinon elle retombe sur le credential AVP par défaut (lecture de tout `kv/*`). Ce changement de la plateforme doit être déployé avant de créer un projet en `--eso`. Une chart en `--eso` n'a donc plus accès aux placeholders `<path:...>` : ses secrets passent par des ExternalSecret.
+
+Les relances ne font qu'ajouter :
+- `--eso` sur un projet AVP existant ajoute l'ESO et ne touche ni à l'AppRole, ni à `kv/argocd/avp/<slug>`, ni au fichier `vault-token`, ni au `vaultCredentials` des JSON. C'est le chemin de migration : le retrait de l'AVP se fait ensuite à la main.
+- `--avp` sur un projet ESO ajoute les pièces AVP (et le `vaultCredentials` manquant d'un JSON existant) sans rien retirer à l'ESO.
 
 ### Aide détaillée
 

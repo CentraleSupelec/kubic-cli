@@ -40,6 +40,9 @@ def _eso_ensure(gitops_path: Path, slug: str, env_list: List[str], vault_addr, v
         except eso_lib.EsoError as e:
             typer.secho(f"[ERROR] ESO {env} : {e}", fg=typer.colors.RED)
             raise typer.Exit(1)
+        except RuntimeError as e:
+            typer.secho(f"[ERROR] ESO {env} : Vault : {e}", fg=typer.colors.RED)
+            raise typer.Exit(1)
 
 
 def _write_app_json(json_path: Path, slug: str, env: str, repo_url: str, eso: bool, dry_run: bool = False):
@@ -235,7 +238,11 @@ def create_project(
     elif not vault_addr or not vault_token:
         typer.echo("[INFO] Aucune adresse ou token Vault fourni : configuration Vault non effectuée")
     else:
-        vault.provision(slug, env_list, addr=vault_addr, token=vault_token, devs=dev_list, dry_run=dry_run, avp=not eso)
+        try:
+            vault.provision(slug, env_list, addr=vault_addr, token=vault_token, devs=dev_list, dry_run=dry_run, avp=not eso)
+        except RuntimeError as e:
+            typer.secho(f"[ERROR] Vault : {e}", fg=typer.colors.RED)
+            raise typer.Exit(1)
 
     # 7. External Secrets (mode --eso): after vault.provision, which creates the kv paths
     if eso:
@@ -570,7 +577,11 @@ def add_environment(
     else:
         # Appeler vault.provision avec TOUS les environnements (existants + nouveaux)
         all_env_list = sorted(existing_envs | really_new)
-        vault.provision(slug, all_env_list, addr=vault_addr, token=vault_token, devs=dev_list, avp=not eso)
+        try:
+            vault.provision(slug, all_env_list, addr=vault_addr, token=vault_token, devs=dev_list, avp=not eso)
+        except RuntimeError as e:
+            typer.secho(f"[ERROR] Vault : {e}", fg=typer.colors.RED)
+            raise typer.Exit(1)
 
     # 7bis. External Secrets (mode --eso) for the new environments only
     if eso:
@@ -750,7 +761,11 @@ def add_dev(
         typer.echo("[INFO] Aucune adresse ou token Vault fourni : configuration Vault non effectuée")
     else:
         # Appeler vault.provision avec tous les environnements et seulement les nouveaux devs
-        vault.provision(slug, sorted(existing_envs), addr=vault_addr, token=vault_token, devs=list(new_dev_list))
+        try:
+            vault.provision(slug, sorted(existing_envs), addr=vault_addr, token=vault_token, devs=list(new_dev_list))
+        except RuntimeError as e:
+            typer.secho(f"[ERROR] Vault : {e}", fg=typer.colors.RED)
+            raise typer.Exit(1)
 
     typer.secho(f"\n✅ Développeurs {sorted(really_new)} ajoutés avec succès au projet '{slug}'", fg=typer.colors.GREEN)
     typer.echo(f"   Accès à tous les environnements: {sorted(existing_envs)}")

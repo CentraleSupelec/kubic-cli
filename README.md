@@ -114,7 +114,7 @@ shared-k8s-prd/
 
 Mode par défaut `--eso` : aucune pièce argocd-vault-plugin (AVP) n'est créée pour un nouveau projet (pas d'AppRole, pas de `kv/argocd/avp/<slug>`, pas de `vault-token-<slug>.yaml`, pas de `vaultCredentials` dans les JSON). `--avp` garde l'ancien modèle à l'identique, sans étape ESO (voir « AVP ou ESO » plus bas).
 
-Relancer `create-project` sur un projet existant est sans risque : seul ce qui manque est créé (c'est ainsi qu'on migre une app existante vers External Secrets). `--dry-run` affiche les actions prévues sans rien écrire (fichiers, Vault, cluster).
+Relancer `create-project` sur un projet existant est sans risque : seul ce qui manque est créé (c'est ainsi qu'on migre une app existante vers External Secrets). `--dry-run` affiche les actions prévues sans rien écrire (fichiers, Vault, cluster). Si une vérification Vault (policy, AppRole, secrets AVP, kv, userpass, rôle `eso-<ns>`) échoue pour une autre raison qu'une absence (403, 5xx, Vault scellé, réseau…), la commande s'arrête avec une erreur claire avant toute écriture : seul un 404 est interprété comme « n'existe pas », jamais une autre erreur.
 
 ### Ajouter un environnement
 

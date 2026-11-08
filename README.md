@@ -59,7 +59,7 @@ Par défaut, l'outil cherche la structure GitOps dans `shared-k8s-prd/`. Vous po
 **Option A : Créer un dossier local**
 ```bash
 mkdir -p shared-k8s-prd/apps
-mkdir -p shared-k8s-prd/helm/argocd/templates/{k8s-accounts,repository,vault}
+mkdir -p shared-k8s-prd/helm/argocd/{users,repositories,vault-tokens}
 ```
 
 **Option B : Utiliser un submodule Git**
@@ -82,15 +82,15 @@ shared-k8s-prd/
 │       └── prod.json
 └── helm/
     └── argocd/
+        ├── repositories/
+        ├── users/
+        ├── vault-tokens/
         └── templates/
             ├── argocd-cm.yaml
-            ├── argocd-rbac-cm.yaml
-            ├── k8s-accounts/
-            ├── repository/
-            └── vault/
+            └── argocd-rbac-cm.yaml
 ```
 
-Les fichiers écrits dans `repository/`, `vault/` et `k8s-accounts/` tiennent en une ligne qui appelle un helper de `_helpers.tpl` (`argocd.repository`, `argocd.vaultToken`, `argocd.k8sUser`). Un `user-<dev>.yaml` existant en YAML complet (ancien format) reçoit ses nouveaux RoleBindings en fin de fichier.
+Les dépôts, credentials AVP et comptes Kubernetes sont des fichiers de données YAML, un par entité, à la racine de la chart : `repositories/<slug>.yaml` (`name`, `url`, `host` optionnel), `vault-tokens/<slug>.yaml` (`name`), `users/<dev>.yaml` (`name`, `namespaces`, `clusterRoles`, `token`). Un template par famille les rend avec les helpers de `_helpers.tpl`. Un ancien fichier YAML complet sous `templates/` reste utilisé tel quel ; un `user-<dev>.yaml` complet reçoit ses nouveaux RoleBindings en fin de fichier.
 
 ---
 
@@ -386,7 +386,7 @@ Le ServiceAccount n'a pas encore été créé dans le cluster. Assurez-vous que 
 La commande `setup-devs` n'a pas trouvé de RoleBindings. Vérifiez que :
 1. Le développeur a été ajouté avec `create-project` ou `add-dev`
 2. Les fichiers GitOps ont été déployés
-3. Le fichier `user-{dev}.yaml` existe dans `k8s-accounts/`
+3. Le fichier `users/{dev}.yaml` existe (ou l'ancien `templates/k8s-accounts/user-{dev}.yaml`)
 
 ### "--cluster-ca est requis"
 

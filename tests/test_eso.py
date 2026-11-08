@@ -316,7 +316,7 @@ def test_create_project_refuses_operator_namespace(tmp_path: Path, monkeypatch):
 # --eso (default) / --avp
 # ---------------------------------------------------------------------------
 
-TOKEN_FILE = "helm/argocd/templates/vault/vault-token-demo.yaml"
+TOKEN_FILE = "helm/argocd/vault-tokens/demo.yaml"
 AVP_PATHS = ("auth/approle/", "kv/data/argocd/avp/", "kv/metadata/argocd/avp/")
 
 

@@ -49,7 +49,7 @@ def parse_existing_environments_from_k8s_yaml(yaml_file: Path, user: str, slug: 
     if not yaml_file.exists():
         return set()
     envs = set()
-    for ns in chart.user_namespaces(yaml_file.read_text()):
+    for ns in chart.user_namespaces(yaml_file):
         if ns == slug:
             envs.add(slug)
         elif ns.startswith(f"{slug}-") and ns != f"{slug}-":
@@ -82,28 +82,14 @@ def smart_write(path: Path, content: str, overwrite: bool = False, dry_run: bool
 
 
 def auto_detect_existing_developers(gitops_path: Path, slug: str) -> list:
-    """Auto-detect existing developers from K8s ServiceAccount files.
-    
-    Returns list of developer usernames found in user-*.yaml files.
-    """
-    k8s_acc_dir = gitops_path / "helm" / "argocd" / "templates" / "k8s-accounts"
+    """Developers whose account file (users/<dev>.yaml or older user-<dev>.yaml) reaches a <slug>-* namespace."""
     detected_devs = set()
-    
-    if not k8s_acc_dir.exists():
-        return []
-    
-    for user_file in k8s_acc_dir.glob("user-*.yaml"):
-        if user_file.is_file():
-            # Extract username from filename like "user-alice.yaml" -> "alice"
-            user_name = user_file.stem.replace("user-", "")
-            
-            # Validate it's actually for this project by checking content
-            try:
-                if any(ns.startswith(f"{slug}-") for ns in chart.user_namespaces(user_file.read_text())):
-                    detected_devs.add(user_name)
-            except Exception as e:
-                typer.secho(f"[WARN] Could not parse {user_file}: {e}", fg=typer.colors.YELLOW)
-    
+    for user_name, user_file in chart.user_files(gitops_path).items():
+        try:
+            if any(ns.startswith(f"{slug}-") for ns in chart.user_namespaces(user_file)):
+                detected_devs.add(user_name)
+        except Exception as e:
+            typer.secho(f"[WARN] Could not parse {user_file}: {e}", fg=typer.colors.YELLOW)
     return sorted(detected_devs)
 
 
@@ -237,6 +223,4 @@ def is_new_developer(gitops_path: Path, dev: str) -> bool:
     Returns:
         True if developer is new, False if they already have a file
     """
-    k8s_acc_dir = gitops_path / "helm" / "argocd" / "templates" / "k8s-accounts"
-    user_yaml_file = k8s_acc_dir / f"user-{dev}.yaml"
-    return not user_yaml_file.exists()
+    return not chart.user_file(gitops_path, dev).exists()

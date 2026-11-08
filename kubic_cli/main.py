@@ -65,18 +65,17 @@ def _write_app_json(json_path: Path, slug: str, env: str, repo_url: str, eso: bo
 
 
 def _write_user_accounts(gitops_path: Path, slug: str, devs, new_file_envs, added_envs, dry_run: bool = False):
-    """One-line account file (helper argocd.k8sUser) per new dev with the namespaces of new_file_envs;
-    an existing file only gets the namespaces of added_envs it lacks."""
-    acc_dir = gitops_path / "helm" / "argocd" / "templates" / "k8s-accounts"
+    """Data file users/<dev>.yaml per new dev with the namespaces of new_file_envs;
+    an existing account only gets the namespaces of added_envs it lacks."""
     for dev in devs:
-        path = acc_dir / f"user-{dev}.yaml"
+        path = chart.user_file(gitops_path, dev)
         if not path.exists():
             namespaces = [eso_lib.namespace(slug, env) for env in sorted(new_file_envs)]
-            smart_write(path, chart.user_content(dev, namespaces), dry_run=dry_run)
+            smart_write(path, chart.dump(chart.user_data(dev, namespaces)), dry_run=dry_run)
             continue
         namespaces = [eso_lib.namespace(slug, env) for env in sorted(added_envs)]
         if dry_run:
-            missing = [ns for ns in namespaces if ns not in chart.user_namespaces(path.read_text())]
+            missing = [ns for ns in namespaces if ns not in chart.user_namespaces(path)]
             if missing:
                 typer.echo(f"[DRY-RUN] [UPDATE] {path} : RoleBindings {missing}")
                 continue
@@ -168,15 +167,14 @@ def create_project(
     if eso:
         typer.echo(f"[INFO] Mode ESO : vault-token-{slug}.yaml non géré")
     elif vault_addr:
-        vault_dir = gitops_path / "helm" / "argocd" / "templates" / "vault"
-        smart_write(vault_dir / f"vault-token-{slug}.yaml", chart.vault_token_content(slug), dry_run=dry_run)
+        vault_file = chart.data_file(gitops_path, "vault-tokens", slug, f"vault/vault-token-{slug}.yaml")
+        smart_write(vault_file, chart.dump(chart.vault_token_data(slug)), dry_run=dry_run)
     else:
         typer.echo("[INFO] Aucun vault-addr fourni : Vault secret YAML non généré")
 
     # 3. repository secret - Éviter réécriture inutile
-    repo_secret_dir = gitops_path / "helm" / "argocd" / "templates" / "repository"
-    ssh_host = get_ssh_host(repo_url)
-    smart_write(repo_secret_dir / f"repository-{slug}.yaml", chart.repository_content(slug, repo_url, ssh_host),
+    repo_file = chart.data_file(gitops_path, "repositories", slug, f"repository/repository-{slug}.yaml")
+    smart_write(repo_file, chart.dump(chart.repository_data(slug, repo_url, get_ssh_host(repo_url))),
                 dry_run=dry_run)
 
     dev_list = [d.strip() for d in devs.split(",") if d.strip()] if devs else []
@@ -294,8 +292,7 @@ def setup_devs(
         typer.echo("[INFO] Auto-détection des environnements depuis les RoleBindings existants...")
         
         for dev in dev_list:
-            k8s_acc_dir = gitops_path / "helm" / "argocd" / "templates" / "k8s-accounts"
-            user_yaml_file = k8s_acc_dir / f"user-{dev}.yaml"
+            user_yaml_file = chart.user_file(gitops_path, dev)
             
             dev_envs = parse_existing_environments_from_k8s_yaml(user_yaml_file, dev, slug)
             

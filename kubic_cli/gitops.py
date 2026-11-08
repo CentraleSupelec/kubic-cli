@@ -1,7 +1,9 @@
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
-from typing import List
+from typing import Dict, List, Optional
 import typer
 
 __all__ = ["ensure_account", "ensure_rbac", "generate_appprojects"]
@@ -66,15 +68,23 @@ def ensure_rbac(rbac_path: Path, slug: str, devs: List[str], dry_run: bool = Fal
         typer.echo(f"{'[DRY-RUN] ' if dry_run else ''}[UPDATE] RBAC mis à jour pour {slug}")
 
 
-def generate_appprojects(gitops_path: Path, dry_run: bool = False):
-    """Regenerate the AppProjects of the GitOps repo from apps/<slug>/*.json."""
+def generate_appprojects(gitops_path: Path, dry_run: bool = False, pending: Optional[Dict[Path, str]] = None):
+    """Regenerate the AppProjects of the GitOps repo from apps/<slug>/*.json.
+    dry_run: --check on a copy of the repo holding the JSON not yet written (pending: path -> content)."""
     script = gitops_path / "scripts" / "gen-appprojects.py"
     if not script.exists():
         typer.secho(f"[WARN] {script} introuvable, AppProject non généré", fg=typer.colors.YELLOW)
         return
     if dry_run:
-        # --check writes nothing; JSON not yet written are not seen
-        r = subprocess.run([sys.executable, str(script), "--check"], cwd=gitops_path, capture_output=True, text=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "gitops"
+            shutil.copytree(gitops_path, root, ignore=shutil.ignore_patterns(".git"))
+            for path, content in (pending or {}).items():
+                target = root / Path(path).relative_to(gitops_path)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content)
+            r = subprocess.run([sys.executable, str(root / "scripts" / "gen-appprojects.py"), "--check"],
+                               cwd=root, capture_output=True, text=True)
         typer.echo("[EXISTS] AppProjects à jour" if r.returncode == 0
                    else f"[DRY-RUN] [UPDATE] AppProjects :\n{r.stdout}{r.stderr}".rstrip())
         return

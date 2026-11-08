@@ -114,6 +114,21 @@ def test_generate_appprojects_dry_run_only_checks(tmp_path: Path, capsys):
     assert "[EXISTS] AppProjects" in capsys.readouterr().out
 
 
+def test_generate_appprojects_dry_run_sees_pending_json(tmp_path: Path, capsys):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    # Fake --check: out of date as soon as a JSON exists without its AppProject
+    (scripts / "gen-appprojects.py").write_text(
+        "import pathlib, sys; sys.exit(1 if list(pathlib.Path('apps').glob('*/*.json')) else 0)\n"
+    )
+    json_path = tmp_path / "apps" / "demo" / "prod.json"
+
+    generate_appprojects(tmp_path, dry_run=True, pending={json_path: "{}\n"})
+
+    assert "[DRY-RUN] [UPDATE] AppProjects" in capsys.readouterr().out
+    assert not json_path.exists()
+
+
 def test_dry_run_leaves_argocd_files_untouched(tmp_path: Path):
     cm = tmp_path / "argocd-cm.yaml"
     cm.write_text("data:\n")

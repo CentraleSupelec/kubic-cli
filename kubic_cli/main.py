@@ -47,17 +47,19 @@ def _eso_ensure(gitops_path: Path, slug: str, env_list: List[str], vault_addr, v
 
 def _write_app_json(json_path: Path, slug: str, env: str, repo_url: str, eso: bool, dry_run: bool = False):
     """--eso: externalSecrets, no vaultCredentials (rendered without AVP). --avp: vaultCredentials, no ESO key.
-    An existing file is never rewritten; --avp only adds a missing vaultCredentials."""
+    An existing file is never rewritten; --avp only adds a missing vaultCredentials.
+    Returns the content written (or to write, in dry-run), None when the file is left as is."""
     cred_name = f"vault-token-{slug}"
     if json_path.exists():
         text = json_path.read_text()
         if eso or "vaultCredentials" in json.loads(text):
             typer.echo(f"[SKIP] {json_path} already exists")
-        else:
-            if not dry_run:
-                json_path.write_text(eso_lib.set_key(text, "vaultCredentials", cred_name))
-            typer.echo(f"{'[DRY-RUN] ' if dry_run else ''}[WRITE] {json_path} vaultCredentials : {cred_name}")
-        return
+            return None
+        content = eso_lib.set_key(text, "vaultCredentials", cred_name)
+        if not dry_run:
+            json_path.write_text(content)
+        typer.echo(f"{'[DRY-RUN] ' if dry_run else ''}[WRITE] {json_path} vaultCredentials : {cred_name}")
+        return content
     data = {"valuesFiles": ["base.yaml", f"{env}.yaml"], "externalRepoURL": repo_url}
     if not eso:
         data["vaultCredentials"] = cred_name
@@ -66,6 +68,7 @@ def _write_app_json(json_path: Path, slug: str, env: str, repo_url: str, eso: bo
     if eso:
         content = eso_lib.set_paths(content, eso_lib.default_paths(slug, env))
     safe_write(json_path, content, dry_run=dry_run)
+    return content
 
 
 @app.command()
@@ -143,9 +146,13 @@ def create_project(
 
     # 1. apps/<slug>/<env>.json
     apps_dir = gitops_path / "apps" / slug
+    pending = {}
     for env in env_list:
-        _write_app_json(apps_dir / f"{env}.json", slug, env, repo_url, eso, dry_run=dry_run)
-    gitops.generate_appprojects(gitops_path, dry_run=dry_run)
+        json_path = apps_dir / f"{env}.json"
+        content = _write_app_json(json_path, slug, env, repo_url, eso, dry_run=dry_run)
+        if content is not None:
+            pending[json_path] = content
+    gitops.generate_appprojects(gitops_path, dry_run=dry_run, pending=pending)
 
     # 2. Vault secret YAML (AppRole AVP, mode --avp) - Éviter réécriture inutile
     if eso:

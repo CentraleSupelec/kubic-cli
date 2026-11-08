@@ -6,7 +6,7 @@ from typer.testing import CliRunner
 
 import json
 
-from kubic_cli.gitops import ensure_account, ensure_rbac, generate_appprojects
+from kubic_cli.gitops import ensure_account, ensure_rbac, generate_appprojects, generate_isolation
 from kubic_cli.main import app
 
 
@@ -144,6 +144,80 @@ def test_dry_run_leaves_argocd_files_untouched(tmp_path: Path):
 
 def test_generate_appprojects_warns_without_script(tmp_path: Path):
     generate_appprojects(tmp_path)  # no scripts/ in the repo: warning only, no exception
+
+
+# ---------------------------------------------------------------------------
+# gitops.generate_isolation
+# ---------------------------------------------------------------------------
+
+def test_generate_isolation_runs_the_repo_script(tmp_path: Path):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    # Fake script: records its working directory
+    (scripts / "gen-isolation.py").write_text(
+        "import os, pathlib; pathlib.Path('ran').write_text(os.getcwd()); print('wrote isolation')\n"
+    )
+
+    generate_isolation(tmp_path)
+
+    assert (tmp_path / "ran").read_text() == str(tmp_path)
+
+
+def test_generate_isolation_fails_when_the_script_fails(tmp_path: Path):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "gen-isolation.py").write_text("import sys; print('bad isolation'); sys.exit(1)\n")
+
+    with pytest.raises(typer.Exit):
+        generate_isolation(tmp_path)
+
+
+def test_generate_isolation_dry_run_only_checks(tmp_path: Path, capsys):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "gen-isolation.py").write_text("import sys; sys.exit(0 if sys.argv[1:] == ['--check'] else 2)\n")
+
+    generate_isolation(tmp_path, dry_run=True)
+
+    assert "[EXISTS] Isolation" in capsys.readouterr().out
+
+
+def test_generate_isolation_dry_run_sees_pending_json(tmp_path: Path, capsys):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    # Fake --check: out of date as soon as a JSON exists without being isolated
+    (scripts / "gen-isolation.py").write_text(
+        "import pathlib, sys; sys.exit(1 if list(pathlib.Path('apps').glob('*/*.json')) else 0)\n"
+    )
+    json_path = tmp_path / "apps" / "demo" / "prod.json"
+
+    generate_isolation(tmp_path, dry_run=True, pending={json_path: "{}\n"})
+
+    assert "[DRY-RUN] [UPDATE] Isolation" in capsys.readouterr().out
+    assert not json_path.exists()
+
+
+def test_generate_isolation_dry_run_never_writes(tmp_path: Path):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "gen-isolation.py").write_text(
+        "import pathlib, sys\n"
+        "out = pathlib.Path('apps/network-policies/isolated-namespaces.generated.yaml')\n"
+        "if '--check' in sys.argv[1:]:\n"
+        "    sys.exit(1)\n"
+        "out.parent.mkdir(parents=True, exist_ok=True)\n"
+        "out.write_text('isolatedNamespaces:\\n')\n"
+    )
+
+    generate_isolation(tmp_path, dry_run=True)
+
+    assert not (tmp_path / "apps" / "network-policies" / "isolated-namespaces.generated.yaml").exists()
+
+
+def test_generate_isolation_skipped_with_info_message_when_script_missing(tmp_path: Path, capsys):
+    generate_isolation(tmp_path)  # no scripts/gen-isolation.py in the repo: info message only, no exception
+
+    assert "[INFO]" in capsys.readouterr().out
 
 
 def test_ensure_rbac_adds_missing_user(tmp_path: Path):
@@ -364,6 +438,95 @@ def test_cli_add_environment_no_new_envs(tmp_path: Path):
     )
     assert res.exit_code == 0
     assert "Aucun nouvel environnement" in res.stdout 
+
+def _fake_isolation_script(gitops_path: Path):
+    scripts = gitops_path / "scripts"
+    scripts.mkdir(parents=True, exist_ok=True)
+    (scripts / "gen-isolation.py").write_text(
+        "import pathlib; pathlib.Path('isolation-ran').write_text('1')\n"
+    )
+
+
+@pytest.mark.parametrize("mode_flag", ["--eso", "--avp"])
+def test_cli_create_project_regenerates_isolation(tmp_path: Path, mode_flag: str):
+    _fake_isolation_script(tmp_path)
+
+    res = CliRunner().invoke(
+        app,
+        [
+            "create-project", "myproj",
+            "--repo-url", "git@gitlab.com:org/myproj.git",
+            "--envs", "prod",
+            "--gitops-path", str(tmp_path),
+            "--skip-vault",
+            mode_flag,
+        ],
+    )
+
+    assert res.exit_code == 0, res.output
+    assert (tmp_path / "isolation-ran").exists()
+
+
+@pytest.mark.parametrize("mode_flag", ["--eso", "--avp"])
+def test_cli_add_environment_regenerates_isolation(tmp_path: Path, mode_flag: str):
+    _fake_isolation_script(tmp_path)
+
+    CliRunner().invoke(
+        app,
+        [
+            "create-project", "myproj",
+            "--repo-url", "git@gitlab.com:org/myproj.git",
+            "--envs", "prod",
+            "--gitops-path", str(tmp_path),
+            "--skip-vault",
+            mode_flag,
+        ],
+    )
+    assert (tmp_path / "isolation-ran").unlink() is None  # reset between the two calls
+
+    res = CliRunner().invoke(
+        app,
+        [
+            "add-environment", "myproj",
+            "--envs", "staging",
+            "--gitops-path", str(tmp_path),
+            "--skip-vault",
+            mode_flag,
+        ],
+    )
+
+    assert res.exit_code == 0, res.output
+    assert (tmp_path / "isolation-ran").exists()
+
+
+def test_cli_create_project_dry_run_does_not_write_isolation_output(tmp_path: Path):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "gen-isolation.py").write_text(
+        "import pathlib, sys\n"
+        "out = pathlib.Path('apps/network-policies/isolated-namespaces.generated.yaml')\n"
+        "if '--check' in sys.argv[1:]:\n"
+        "    sys.exit(1)\n"
+        "out.parent.mkdir(parents=True, exist_ok=True)\n"
+        "out.write_text('isolatedNamespaces:\\n')\n"
+    )
+
+    res = CliRunner().invoke(
+        app,
+        [
+            "create-project", "myproj",
+            "--repo-url", "git@gitlab.com:org/myproj.git",
+            "--envs", "prod",
+            "--gitops-path", str(tmp_path),
+            "--skip-vault",
+            "--dry-run",
+        ],
+    )
+
+    assert res.exit_code == 0, res.output
+    assert not (tmp_path / "apps" / "network-policies" / "isolated-namespaces.generated.yaml").exists()
+    assert not (tmp_path / "apps" / "myproj" / "prod.json").exists()
+
 
 # ---------------------------------------------------------------------------
 # CLI setup-devs --write-kubeconfig (sans appels HTTP)

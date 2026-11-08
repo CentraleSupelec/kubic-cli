@@ -111,6 +111,7 @@ shared-k8s-prd/
 - ✅ Configuration Argo CD (comptes, RBAC)
 - ✅ Vault policies et userpass pour les développeurs
 - ✅ External Secrets : clé `externalSecrets` du JSON, store Vault et rôle/policy `eso-<ns>` (voir plus bas)
+- ✅ AppProjects et isolation réseau du dépôt GitOps régénérés (`scripts/gen-appprojects.py`, `scripts/gen-isolation.py`)
 
 Mode par défaut `--eso` : aucune pièce argocd-vault-plugin (AVP) n'est créée pour un nouveau projet (pas d'AppRole, pas de `kv/argocd/avp/<slug>`, pas de `vault-token-<slug>.yaml`, pas de `vaultCredentials` dans les JSON). `--avp` garde l'ancien modèle à l'identique, sans étape ESO (voir « AVP ou ESO » plus bas).
 

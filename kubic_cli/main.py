@@ -153,6 +153,7 @@ def create_project(
         if content is not None:
             pending[json_path] = content
     gitops.generate_appprojects(gitops_path, dry_run=dry_run, pending=pending)
+    gitops.generate_isolation(gitops_path, dry_run=dry_run, pending=pending)
 
     # 2. Vault secret YAML (AppRole AVP, mode --avp) - Éviter réécriture inutile
     if eso:
@@ -575,7 +576,8 @@ def add_environment(
     for env in sorted(really_new):
         _write_app_json(apps_dir / f"{env}.json", slug, env, repo_url, eso)
     gitops.generate_appprojects(gitops_path)
-    
+    gitops.generate_isolation(gitops_path)
+
     # 7. VAULT KV : Merger avec les environnements existants (la logique vault.provision fait déjà le merge)
     if skip_vault:
         typer.echo("[SKIP] Configuration Vault ignorée (--skip-vault)")

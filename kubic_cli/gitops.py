@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import typer
 
-__all__ = ["ensure_account", "ensure_rbac", "generate_appprojects"]
+__all__ = ["ensure_account", "ensure_rbac", "generate_appprojects", "generate_isolation"]
 
 
 def ensure_account(cm_path: Path, user: str, dry_run: bool = False):
@@ -93,3 +93,30 @@ def generate_appprojects(gitops_path: Path, dry_run: bool = False, pending: Opti
         typer.secho(f"[ERROR] gen-appprojects.py a échoué :\n{r.stdout}{r.stderr}", fg=typer.colors.RED)
         raise typer.Exit(1)
     typer.echo(f"[UPDATE] AppProjects : {r.stdout.strip()}")
+
+
+def generate_isolation(gitops_path: Path, dry_run: bool = False, pending: Optional[Dict[Path, str]] = None):
+    """Regenerate the network isolation file of the GitOps repo from apps/<slug>/*.json.
+    dry_run: --check on a copy of the repo holding the JSON not yet written (pending: path -> content)."""
+    script = gitops_path / "scripts" / "gen-isolation.py"
+    if not script.exists():
+        typer.echo(f"[INFO] {script} introuvable, isolation réseau non générée")
+        return
+    if dry_run:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "gitops"
+            shutil.copytree(gitops_path, root, ignore=shutil.ignore_patterns(".git"))
+            for path, content in (pending or {}).items():
+                target = root / Path(path).relative_to(gitops_path)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content)
+            r = subprocess.run([sys.executable, str(root / "scripts" / "gen-isolation.py"), "--check"],
+                               cwd=root, capture_output=True, text=True)
+        typer.echo("[EXISTS] Isolation à jour" if r.returncode == 0
+                   else f"[DRY-RUN] [UPDATE] Isolation :\n{r.stdout}{r.stderr}".rstrip())
+        return
+    r = subprocess.run([sys.executable, str(script)], cwd=gitops_path, capture_output=True, text=True)
+    if r.returncode != 0:
+        typer.secho(f"[ERROR] gen-isolation.py a échoué :\n{r.stdout}{r.stderr}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+    typer.echo(f"[UPDATE] Isolation : {r.stdout.strip()}")

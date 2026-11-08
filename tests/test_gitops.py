@@ -103,6 +103,29 @@ def test_generate_appprojects_fails_when_the_script_fails(tmp_path: Path):
         generate_appprojects(tmp_path)
 
 
+def test_generate_appprojects_dry_run_only_checks(tmp_path: Path, capsys):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "gen-appprojects.py").write_text("import sys; sys.exit(0 if sys.argv[1:] == ['--check'] else 2)\n")
+
+    generate_appprojects(tmp_path, dry_run=True)
+
+    assert "[EXISTS] AppProjects" in capsys.readouterr().out
+
+
+def test_dry_run_leaves_argocd_files_untouched(tmp_path: Path):
+    cm = tmp_path / "argocd-cm.yaml"
+    cm.write_text("data:\n")
+    rbac = tmp_path / "argocd-rbac-cm.yaml"
+    rbac.write_text("data:\n  policy.csv: |\n")
+
+    ensure_account(cm, "alice", dry_run=True)
+    ensure_rbac(rbac, "proj", ["alice"], dry_run=True)
+
+    assert cm.read_text() == "data:\n"
+    assert rbac.read_text() == "data:\n  policy.csv: |\n"
+
+
 def test_generate_appprojects_warns_without_script(tmp_path: Path):
     generate_appprojects(tmp_path)  # no scripts/ in the repo: warning only, no exception
 

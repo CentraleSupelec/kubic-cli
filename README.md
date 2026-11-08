@@ -110,6 +110,9 @@ shared-k8s-prd/
 - ✅ ServiceAccounts et RoleBindings pour alice et bob
 - ✅ Configuration Argo CD (comptes, RBAC)
 - ✅ Vault policies et userpass pour les développeurs
+- ✅ External Secrets : clé `externalSecrets` du JSON, store Vault et rôle/policy `eso-<ns>` (voir plus bas)
+
+Relancer `create-project` sur un projet existant est sans risque : seul ce qui manque est créé (c'est ainsi qu'on migre une app existante vers External Secrets). `--dry-run` affiche les actions prévues sans rien écrire (fichiers, Vault, cluster).
 
 ### Ajouter un environnement
 
@@ -150,24 +153,23 @@ Après avoir déployé via GitOps (commit → push → ArgoCD sync) :
 | `add-environment` | Ajoute des environnements à un projet existant |
 | `add-dev` | Ajoute des développeurs à un projet existant |
 | `setup-devs` | Génère tokens K8s et kubeconfigs pour développeurs existants |
-| `eso plan/enable/status/disable` | External Secrets : clé JSON, store Vault et rôle/policy `eso-<ns>` |
 
 Toutes les commandes sont **idempotentes** et peuvent être relancées sans risque.
 
 ### External Secrets (ESO)
 
-Opt-in par environnement : clé `"externalSecrets": {"paths": ["<app>/shared", "<app>/<env>"]}` dans `apps/<app>/<env>.json` (chemins KV v2 sans `kv/data/`). Le JSON est la source de vérité : kubic-cli génère `helm/argocd/templates/external-secrets/<ns>.yaml` et réconcilie dans Vault la policy `eso-<ns>` (lecture seule sur ces chemins) et le rôle `auth/kubernetes/role/eso-<ns>` (SA `external-secrets-vault` du namespace). Les ExternalSecrets restent écrits par chaque équipe dans sa chart.
+Activé par défaut par `create-project`, comme Vault. Pour chaque environnement :
+
+- clé `"externalSecrets": {"paths": ["<app>/shared", "<app>/<env>"]}` dans `apps/<app>/<env>.json` (chemins KV v2 sans `kv/data/`). Ajoutée seulement si absente : une clé existante n'est jamais modifiée, on y ajoute des chemins à la main ;
+- `helm/argocd/templates/external-secrets/<ns>.yaml` (store Vault du namespace) ;
+- dans Vault, policy `eso-<ns>` (lecture seule sur ces chemins) et rôle `auth/kubernetes/role/eso-<ns>` (SA `external-secrets-vault` du namespace). Diff puis écriture de la seule partie divergente ; les policies sont comparées par leur sens.
+
+Le JSON est la source de vérité. Refusés : le namespace `external-secrets` de l'opérateur, tout chemin hors de `<app>/`, tout rôle visant le ServiceAccount de l'opérateur. Les valeurs des secrets ne sont jamais lues par l'étape ESO. Les ExternalSecrets restent écrits par chaque équipe dans sa chart.
 
 ```bash
-./kubic-cli eso plan myapp                              # lecture seule : chemins, store, diff Vault
-./kubic-cli eso enable myapp --env prod --dry-run        # n'écrit rien
-./kubic-cli eso enable myapp --env prod --path myapp/shared --path myapp/prod
-./kubic-cli eso status myapp                             # + ClusterSecretStore si --api-server/--api-token
-./kubic-cli eso disable myapp --env prod                 # refuse s'il reste des ExternalSecrets (sauf --force)
-./kubic-cli create-project myapp --repo-url ... --eso    # active ESO à la création
+./kubic-cli create-project myapp --repo-url ... --envs preprod,prod --dry-run   # lecture seule
+./kubic-cli create-project myapp --repo-url ... --envs preprod,prod             # applique
 ```
-
-Sans clé JSON, `plan` propose les chemins des placeholders AVP `<path:kv/data/...>` trouvés dans les values (noms de clés seulement), sinon `<app>/shared` et `<app>/<env>`. Les valeurs des secrets ne sont jamais lues (`kv/metadata` uniquement).
 
 ### Aide détaillée
 

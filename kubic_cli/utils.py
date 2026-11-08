@@ -5,12 +5,15 @@ import typer
 
 __all__ = ["safe_write", "get_ssh_host", "gen_pwd", "parse_existing_environments_from_k8s_yaml", "smart_write", "auto_detect_existing_developers", "validate_project_exists", "get_existing_environments", "duration_to_seconds", "generate_multi_environment_kubeconfig", "is_new_developer", "append_rolebindings_to_yaml"]
 
-def safe_write(path: Path, content: str, overwrite: bool = False):
+def safe_write(path: Path, content: str, overwrite: bool = False, dry_run: bool = False):
     """Write *content* to *path* except if it already exists (unless overwrite=True).
     Affiche le résultat via typer (WRITE / SKIP).
     """
     if path.exists() and not overwrite:
         typer.echo(f"[SKIP] {path} already exists")
+        return
+    if dry_run:
+        typer.echo(f"[DRY-RUN] [WRITE] {path}")
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content)
@@ -102,7 +105,7 @@ def parse_existing_environments_from_k8s_yaml(yaml_file: Path, user: str, slug: 
         return set()
 
 
-def smart_write(path: Path, content: str, overwrite: bool = False):
+def smart_write(path: Path, content: str, overwrite: bool = False, dry_run: bool = False):
     """Write content to path only if it differs from existing content.
     
     Avoids unnecessary file rewrites and git commits for identical content.
@@ -117,7 +120,10 @@ def smart_write(path: Path, content: str, overwrite: bool = False):
         if existing_content == content:
             typer.echo(f"[UNCHANGED] {path}")
             return
-    
+
+    if dry_run:
+        typer.echo(f"[DRY-RUN] [WRITE] {path}")
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content)
     typer.echo(f"[WRITE] {path}")

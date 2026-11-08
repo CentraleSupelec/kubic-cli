@@ -27,6 +27,7 @@ TOKEN_MAX_TTL = 1800
 _PATH_RE = re.compile(r"^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$")
 _POLICY_BLOCK = re.compile(r'path\s+"([^"]+)"\s*\{\s*capabilities\s*=\s*\[([^\]]*)\]\s*\}')
 _WS = re.compile(r"\s*")
+_INDENT = re.compile(r"[ \t]*$")
 
 
 class EsoError(Exception):
@@ -96,19 +97,31 @@ def read_paths(text: str) -> Optional[List[str]]:
     return value["paths"]
 
 
+def _valid(text: str) -> str:
+    """The edited text, or EsoError: an in-place edit must never leave an unparsable file."""
+    try:
+        json.loads(text)
+    except ValueError as e:
+        raise EsoError(f"édition JSON invalide ({e})") from e
+    return text
+
+
 def set_key(text: str, key: str, value) -> str:
     """Set a top-level key in place, leaving the rest of the file byte-identical."""
     value = json.dumps(value, ensure_ascii=False)
     members, close = _members(text)
     for k, _, start, end in members:
         if k == key:
-            return text[:start] + value + text[end:]
+            return _valid(text[:start] + value + text[end:])
     if not members:
-        return text[:close].rstrip() + f'\n  "{key}": {value}\n' + text[close:]
+        return _valid(text[:close].rstrip() + f'\n  "{key}": {value}\n' + text[close:])
     first_start = members[0][1]
-    indent = text[text.rfind("\n", 0, first_start) + 1:first_start]
+    # Indentation of the first key: the whitespace right before it on its line (nothing when
+    # the key follows the brace on the same line, as in a compact file)
+    line_start = text.rfind("\n", 0, first_start) + 1
+    indent = _INDENT.search(text, line_start, first_start).group(0)
     last_end = members[-1][3]
-    return text[:last_end] + f',\n{indent}"{key}": {value}' + text[last_end:]
+    return _valid(text[:last_end] + f',\n{indent}"{key}": {value}' + text[last_end:])
 
 
 def set_paths(text: str, paths: List[str]) -> str:

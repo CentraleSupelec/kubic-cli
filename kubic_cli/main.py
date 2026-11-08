@@ -45,9 +45,27 @@ def _eso_ensure(gitops_path: Path, slug: str, env_list: List[str], vault_addr, v
             raise typer.Exit(1)
 
 
+def _project_uses_avp(gitops_path: Path, slug: str) -> bool:
+    """True when a JSON of the project carries vaultCredentials: the project is rendered with AVP."""
+    return any("vaultCredentials" in json.loads(f.read_text())
+               for f in sorted((gitops_path / "apps" / slug).glob("*.json")))
+
+
+def _resolve_mode(eso: Optional[bool], gitops_path: Path, slug: str) -> bool:
+    """--eso / --avp given: as asked. Neither: the mode of the existing project (AVP as soon as
+    a JSON has vaultCredentials, ESO otherwise), so a new environment or developer never switches
+    a project's secret model by default."""
+    if eso is not None:
+        return eso
+    avp = _project_uses_avp(gitops_path, slug)
+    typer.echo(f"[INFO] Mode détecté : {'AVP (vaultCredentials dans un JSON)' if avp else 'ESO'}")
+    return not avp
+
+
 def _write_app_json(json_path: Path, slug: str, env: str, repo_url: str, eso: bool, dry_run: bool = False):
     """--eso: externalSecrets, no vaultCredentials (rendered without AVP). --avp: vaultCredentials, no ESO key.
-    An existing file is never rewritten; --avp only adds a missing vaultCredentials.
+    An existing file is left as is in --eso mode. In --avp mode, the only change made to an existing
+    file is adding a missing vaultCredentials: the app is then rendered with AVP again.
     Returns the content written (or to write, in dry-run), None when the file is left as is."""
     cred_name = f"vault-token-{slug}"
     if json_path.exists():
@@ -485,7 +503,7 @@ def add_environment(
     api_token: Optional[str] = typer.Option(None, "--api-token", envvar="KUBE_API_TOKEN", help="Token Bearer pour l'API Kubernetes"),
     insecure: bool = typer.Option(False, "--insecure-skip-tls", help="Ne pas vérifier le certificat TLS"),
     ca_file: Optional[Path] = typer.Option(None, "--cluster-ca", help="Chemin vers le certificat CA pour l'API Kubernetes"),
-    eso: bool = typer.Option(True, "--eso/--avp", help="Secrets Vault : --eso (défaut) External Secrets, sans AppRole AVP ; --avp ancien modèle argocd-vault-plugin, sans ESO"),
+    eso: Optional[bool] = typer.Option(None, "--eso/--avp", help="Secrets Vault des nouveaux environnements : --eso External Secrets, --avp argocd-vault-plugin. Par défaut, le mode du projet (AVP si un JSON a vaultCredentials, ESO sinon)"),
 ):
     """Ajoute de nouveaux environnements à un projet Kubic existant.
 
@@ -543,7 +561,8 @@ def add_environment(
         raise typer.Exit(1)
     
     typer.echo(f"[INFO] Repository URL détectée: {repo_url}")
-    if eso and any("vaultCredentials" in json.loads(f.read_text()) for f in apps_dir.glob("*.json")):
+    eso = _resolve_mode(eso, gitops_path, slug)
+    if eso and _project_uses_avp(gitops_path, slug):
         typer.secho("[WARN] Projet existant en AVP (vaultCredentials) : les nouveaux environnements seront rendus "
                     "sans AVP. Utilisez --avp si la chart contient des <path:...>.", fg=typer.colors.YELLOW)
     _eso_precheck(eso, gitops_path, slug, sorted(really_new))
@@ -769,9 +788,11 @@ def add_dev(
     elif not vault_addr or not vault_token:
         typer.echo("[INFO] Aucune adresse ou token Vault fourni : configuration Vault non effectuée")
     else:
-        # Appeler vault.provision avec tous les environnements et seulement les nouveaux devs
+        # Appeler vault.provision avec tous les environnements et seulement les nouveaux devs.
+        # Mode du projet : sur un projet ESO, aucune pièce AVP (AppRole, kv/argocd/avp) n'est créée.
         try:
-            vault.provision(slug, sorted(existing_envs), addr=vault_addr, token=vault_token, devs=list(new_dev_list))
+            vault.provision(slug, sorted(existing_envs), addr=vault_addr, token=vault_token, devs=list(new_dev_list),
+                            avp=_project_uses_avp(gitops_path, slug))
         except RuntimeError as e:
             typer.secho(f"[ERROR] Vault : {e}", fg=typer.colors.RED)
             raise typer.Exit(1)

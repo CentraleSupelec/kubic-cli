@@ -115,22 +115,24 @@ shared-k8s-prd/
 
 Mode par défaut `--eso` : aucune pièce argocd-vault-plugin (AVP) n'est créée pour un nouveau projet (pas d'AppRole, pas de `kv/argocd/avp/<slug>`, pas de `vault-token-<slug>.yaml`, pas de `vaultCredentials` dans les JSON). `--avp` garde l'ancien modèle à l'identique, sans étape ESO (voir « AVP ou ESO » plus bas).
 
-Relancer `create-project` sur un projet existant est sans risque : seul ce qui manque est créé (c'est ainsi qu'on migre une app existante vers External Secrets). `--dry-run` affiche les actions prévues sans rien écrire (fichiers, Vault, cluster). Si une vérification Vault (policy, AppRole, secrets AVP, kv, userpass, rôle `eso-<ns>`) échoue pour une autre raison qu'une absence (403, 5xx, Vault scellé, réseau…), la commande s'arrête avec une erreur claire avant toute écriture : seul un 404 est interprété comme « n'existe pas », jamais une autre erreur.
+Relancer `create-project` sur un projet existant est sans risque : seul ce qui manque est créé (c'est ainsi qu'on migre une app existante vers External Secrets). `--dry-run` affiche les actions prévues sans rien écrire (fichiers, Vault, cluster). Si une vérification Vault (policy, AppRole, secrets AVP, kv, userpass, rôle `eso-<ns>`) échoue pour une autre raison qu'une absence (403, 5xx, Vault scellé, réseau…), la commande s'arrête avec une erreur claire au lieu de recréer ou d'écraser l'objet concerné : seul un 404 est interprété comme « n'existe pas », jamais une autre erreur. Les objets déjà écrits avant l'erreur restent en place ; la relance reprend là où elle s'est arrêtée.
 
 ### Ajouter un environnement
 
 ```bash
-./kubic-cli add-environment myapp --envs preprod          # --eso par défaut
-./kubic-cli add-environment myapp --envs preprod --avp    # projet resté en AVP
+./kubic-cli add-environment myapp --envs preprod          # mode du projet (ESO ou AVP)
+./kubic-cli add-environment myapp --envs preprod --eso    # forcer ESO sur un projet resté en AVP
 ```
 
-Mêmes modes que `create-project`, pour les seuls nouveaux environnements. Un avertissement s'affiche si `--eso` est utilisé sur un projet dont les JSON ont un `vaultCredentials`.
+Mêmes modes que `create-project`, pour les seuls nouveaux environnements. Sans `--eso` ni `--avp`, le mode du projet est suivi : AVP dès qu'un JSON de `apps/<app>/` a un `vaultCredentials`, ESO sinon (affiché en `[INFO] Mode détecté`). Forcer `--eso` sur un projet AVP affiche un avertissement : le nouvel environnement est rendu sans AVP, ses `<path:...>` ne sont plus résolus.
 
 ### Ajouter un développeur
 
 ```bash
 ./kubic-cli add-dev myapp --devs charlie
 ```
+
+Côté Vault, `add-dev` suit le mode du projet : sur un projet ESO (aucun `vaultCredentials` dans les JSON), aucune pièce AVP n'est créée.
 
 ### Générer les tokens et kubeconfigs
 
@@ -170,7 +172,7 @@ Activé par défaut par `create-project`, comme Vault. Pour chaque environnement
 - `helm/argocd/templates/external-secrets/<ns>.yaml` (store Vault du namespace) ;
 - dans Vault, policy `eso-<ns>` (lecture seule sur ces chemins) et rôle `auth/kubernetes/role/eso-<ns>` (SA `external-secrets-vault` du namespace). Diff puis écriture de la seule partie divergente ; les policies sont comparées par leur sens.
 
-Le JSON est la source de vérité. Refusés : le namespace `external-secrets` de l'opérateur, tout chemin hors de `<app>/`, tout rôle visant le ServiceAccount de l'opérateur. Les valeurs des secrets ne sont jamais lues par l'étape ESO. Les ExternalSecrets restent écrits par chaque équipe dans sa chart.
+Le JSON est la source de vérité. Refusés : le namespace `external-secrets` de l'opérateur, tout chemin hors de `<app>/`, tout rôle visant le ServiceAccount de l'opérateur. Les valeurs des secrets ne sont jamais lues, ni par l'étape ESO ni par la vérification Vault : l'existence d'un secret KV est lue dans `kv/metadata` (une version courante supprimée compte comme absente et est recréée). Les ExternalSecrets restent écrits par chaque équipe dans sa chart.
 
 ```bash
 ./kubic-cli create-project myapp --repo-url ... --envs preprod,prod --dry-run   # lecture seule

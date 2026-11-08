@@ -31,8 +31,8 @@ class FakeResp:
 
 
 class FakeVault:
-    """Mock of the Vault REST API: {path: data}. strict: any kv/data access fails (vault.provision
-    outside dry-run still GETs kv/data to test existence)."""
+    """Mock of the Vault REST API: {path: data}. strict: any kv/data access fails, read or write
+    (existence is checked on kv/metadata, so a read-only run never touches kv/data)."""
 
     def __init__(self, data=None, strict=True):
         self.data = dict(data or {})
@@ -260,9 +260,9 @@ def test_create_project_enables_eso_by_default(tmp_path: Path, monkeypatch):
 
 
 def test_create_project_migrates_existing_app(gitops, monkeypatch):
-    fake = _fake(monkeypatch, {"sys/policies/acl/demo": {}, "auth/approle/role/demo": {}, "kv/data/argocd/avp/demo": {},
+    fake = _fake(monkeypatch, {"sys/policies/acl/demo": {}, "auth/approle/role/demo": {}, "kv/metadata/argocd/avp/demo": {},
                                "kv/metadata/demo": {"keys": ["prod", "shared"]},
-                               "kv/data/demo/prod": {}, "kv/data/demo/shared": {}}, strict=False)
+                               "kv/metadata/demo/prod": {}, "kv/metadata/demo/shared": {}}, strict=True)
     jf = gitops / "apps/demo/prod.json"
     original = jf.read_text()
     r = _create(gitops, *VAULT_OPTS)
@@ -415,6 +415,68 @@ def test_add_environment_follows_mode(tmp_path: Path, monkeypatch, flag):
 def test_add_environment_eso_warns_on_avp_project(tmp_path: Path, monkeypatch):
     _fake(monkeypatch, strict=False)
     assert _create(tmp_path, *VAULT_OPTS, "--avp").exit_code == 0
-    r = _add_env(tmp_path)
+    r = _add_env(tmp_path, "--eso")  # explicit: the default follows the project mode
     assert r.exit_code == 0, r.output
     assert "[WARN] Projet existant en AVP" in r.output
+
+
+@pytest.mark.parametrize("flag", ["--eso", "--avp"])
+def test_add_environment_default_follows_project_mode(tmp_path: Path, monkeypatch, flag):
+    """No --eso/--avp: a new environment keeps the secret model of the project."""
+    fake = _fake(monkeypatch, strict=False)
+    assert _create(tmp_path, *VAULT_OPTS, flag).exit_code == 0
+    n = len(fake.calls)
+    r = _add_env(tmp_path)
+    assert r.exit_code == 0, r.output
+    assert "[INFO] Mode détecté" in r.output and "[WARN] Projet existant" not in r.output
+    data = json.loads((tmp_path / "apps/demo/preprod.json").read_text())
+    if flag == "--eso":
+        assert "vaultCredentials" not in data and "externalSecrets" in data
+        assert not [c for c in fake.calls[n:] if c[1].startswith(AVP_PATHS)]
+    else:
+        assert data["vaultCredentials"] == "vault-token-demo" and "externalSecrets" not in data
+        assert not [c for c in fake.calls[n:] if "eso-" in c[1]]
+
+
+def _add_dev(gitops_path):
+    return CliRunner().invoke(app, ["add-dev", "demo", "--devs", "charlie", "--gitops-path", str(gitops_path), *VAULT_OPTS],
+                              input="y\n")
+
+
+@pytest.mark.parametrize("flag", ["--eso", "--avp"])
+def test_add_dev_follows_project_mode(tmp_path: Path, monkeypatch, flag):
+    """add-dev on an ESO project must not provision the AppRole / kv/argocd/avp of the AVP model."""
+    fake = _fake(monkeypatch, strict=False)
+    assert _create(tmp_path, *VAULT_OPTS, flag).exit_code == 0
+    n = len(fake.calls)
+    r = _add_dev(tmp_path)
+    assert r.exit_code == 0, r.output
+    assert ("POST", "auth/userpass/users/charlie") in fake.calls[n:]
+    avp_calls = [c for c in fake.calls[n:] if c[1].startswith(AVP_PATHS)]
+    if flag == "--eso":
+        assert avp_calls == []
+        assert "auth/approle/role/demo" not in fake.data
+    else:
+        assert avp_calls and not [c for c in avp_calls if c[0] not in ("GET", "LIST")]  # existing AVP only checked
+
+
+# ---------------------------------------------------------------------------
+# JSON edition: file shapes
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text", [
+    '{}\n',
+    '{ "a": 1 }',
+    '{"valuesFiles": ["base.yaml"], "project": "x"}\n',
+    '{"a": 1,\n  "b": 2\n}\n',
+    '{\n\t"a": 1\n}\n',
+])
+def test_set_key_keeps_any_file_shape_parsable(text):
+    out = eso.set_paths(text, ["x/shared"])
+    data = json.loads(out)
+    assert data["externalSecrets"] == {"paths": ["x/shared"]}
+    assert {k: v for k, v in data.items() if k != "externalSecrets"} == json.loads(text)
+
+
+def test_set_key_compact_file_gets_no_brace_in_indent():
+    assert eso.set_paths('{ "a": 1 }', ["x"]) == '{ "a": 1,\n "externalSecrets": {"paths": ["x"]} }'

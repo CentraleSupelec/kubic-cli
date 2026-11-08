@@ -6,7 +6,7 @@ from typing import List, Optional
 
 from .cred import collect
 
-__all__ = ["request", "get_or_none", "provision"]
+__all__ = ["request", "get_or_none", "kv_exists", "provision"]
 
 
 def request(method: str, url: str, token: str, json=None, verify: bool = True):
@@ -32,17 +32,31 @@ def get_or_none(method: str, url: str, token: str, verify: bool = True):
         raise RuntimeError(f"Impossible de vérifier l'existence de {url} : {e}") from e
 
 
+def kv_exists(base: str, path: str, token: str, verify: bool = True) -> bool:
+    """Does KV v2 secret <path> hold a live current version? Read from kv/metadata only: the value
+    is never fetched. A soft-deleted or destroyed current version counts as absent (a GET on
+    kv/data would answer 404 too), so it gets recreated. Any error other than 404 is re-raised."""
+    meta = get_or_none("GET", f"{base}/kv/metadata/{path}", token, verify=verify)
+    if meta is None:
+        return False
+    data = meta.get("data", {})
+    current = data.get("versions", {}).get(str(data.get("current_version")))
+    if current is None:
+        return True
+    return not current.get("deletion_time") and not current.get("destroyed")
+
+
 def provision(slug: str, envs: List[str], addr: str, token: str, verify: bool = True, devs: Optional[List[str]] = None,
               dry_run: bool = False, avp: bool = True):
     """Regroupe toute la logique Vault (policy, approle, kv, userpass).
 
-    dry_run : aucune écriture, et existence des secrets via kv/metadata (valeurs jamais lues).
+    L'existence des secrets KV est lue via kv/metadata (valeurs jamais lues), en dry-run comme en réel.
+    dry_run : aucune écriture.
     avp : False = pas d'AppRole ni de kv/argocd/avp/<slug> (mode ESO) ; un existant n'est jamais touché.
     """
 
     base = addr.rstrip("/") + "/v1"
     pre = "[DRY-RUN] " if dry_run else ""
-    kv_check = "metadata" if dry_run else "data"
 
     # Policy - Vérifier si elle existe avant de la recréer
     if get_or_none("GET", f"{base}/sys/policies/acl/{slug}", token, verify=verify) is not None:
@@ -67,7 +81,7 @@ def provision(slug: str, envs: List[str], addr: str, token: str, verify: bool = 
             typer.echo(f"[EXISTS] AppRole {slug}")
 
             # Vérifier si les credentials AVP existent déjà
-            if get_or_none("GET", f"{base}/kv/{kv_check}/argocd/avp/{slug}", token, verify=verify) is not None:
+            if kv_exists(base, f"argocd/avp/{slug}", token, verify=verify):
                 typer.echo(f"[EXISTS] AVP credentials kv/argocd/avp/{slug} (preserved)")
             else:
                 # Seulement si pas d'AVP secrets, en créer de nouveaux
@@ -99,7 +113,7 @@ def provision(slug: str, envs: List[str], addr: str, token: str, verify: bool = 
 
     all_envs = existing_envs | {"shared", *envs}
     for env in sorted(all_envs):
-        if get_or_none("GET", f"{base}/kv/{kv_check}/{slug}/{env}", token, verify=verify) is not None:
+        if kv_exists(base, f"{slug}/{env}", token, verify=verify):
             typer.echo(f"[EXISTS] kv data {slug}/{env}")
         else:
             if not dry_run:

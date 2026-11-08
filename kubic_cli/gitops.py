@@ -68,12 +68,17 @@ def ensure_rbac(rbac_path: Path, slug: str, devs: List[str], dry_run: bool = Fal
         typer.echo(f"{'[DRY-RUN] ' if dry_run else ''}[UPDATE] RBAC mis à jour pour {slug}")
 
 
-def generate_appprojects(gitops_path: Path, dry_run: bool = False, pending: Optional[Dict[Path, str]] = None):
-    """Regenerate the AppProjects of the GitOps repo from apps/<slug>/*.json.
-    dry_run: --check on a copy of the repo holding the JSON not yet written (pending: path -> content)."""
-    script = gitops_path / "scripts" / "gen-appprojects.py"
+def _run_generator(gitops_path: Path, script_name: str, label: str, dry_run: bool, pending: Optional[Dict[Path, str]],
+                   missing: str):
+    """Run scripts/<script_name> of the GitOps repo, which regenerates a file from apps/<slug>/*.json.
+    dry_run: --check on a copy of the repo holding the JSON not yet written (pending: path -> content).
+    missing: message when the script is absent ("warn" -> [WARN], else [INFO]); the step is then skipped."""
+    script = gitops_path / "scripts" / script_name
     if not script.exists():
-        typer.secho(f"[WARN] {script} introuvable, AppProject non généré", fg=typer.colors.YELLOW)
+        if missing == "warn":
+            typer.secho(f"[WARN] {script} introuvable, {label} non généré", fg=typer.colors.YELLOW)
+        else:
+            typer.echo(f"[INFO] {script} introuvable, {label} non générée")
         return
     if dry_run:
         with tempfile.TemporaryDirectory() as tmp:
@@ -83,40 +88,24 @@ def generate_appprojects(gitops_path: Path, dry_run: bool = False, pending: Opti
                 target = root / Path(path).relative_to(gitops_path)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(content)
-            r = subprocess.run([sys.executable, str(root / "scripts" / "gen-appprojects.py"), "--check"],
+            r = subprocess.run([sys.executable, str(root / "scripts" / script_name), "--check"],
                                cwd=root, capture_output=True, text=True)
-        typer.echo("[EXISTS] AppProjects à jour" if r.returncode == 0
-                   else f"[DRY-RUN] [UPDATE] AppProjects :\n{r.stdout}{r.stderr}".rstrip())
+        typer.echo(f"[EXISTS] {label} à jour" if r.returncode == 0
+                   else f"[DRY-RUN] [UPDATE] {label} :\n{r.stdout}{r.stderr}".rstrip())
         return
     r = subprocess.run([sys.executable, str(script)], cwd=gitops_path, capture_output=True, text=True)
     if r.returncode != 0:
-        typer.secho(f"[ERROR] gen-appprojects.py a échoué :\n{r.stdout}{r.stderr}", fg=typer.colors.RED)
+        typer.secho(f"[ERROR] {script_name} a échoué :\n{r.stdout}{r.stderr}", fg=typer.colors.RED)
         raise typer.Exit(1)
-    typer.echo(f"[UPDATE] AppProjects : {r.stdout.strip()}")
+    typer.echo(f"[UPDATE] {label} : {r.stdout.strip()}")
+
+
+def generate_appprojects(gitops_path: Path, dry_run: bool = False, pending: Optional[Dict[Path, str]] = None):
+    """Regenerate the AppProjects of the GitOps repo from apps/<slug>/*.json (scripts/gen-appprojects.py)."""
+    _run_generator(gitops_path, "gen-appprojects.py", "AppProjects", dry_run, pending, missing="warn")
 
 
 def generate_isolation(gitops_path: Path, dry_run: bool = False, pending: Optional[Dict[Path, str]] = None):
-    """Regenerate the network isolation file of the GitOps repo from apps/<slug>/*.json.
-    dry_run: --check on a copy of the repo holding the JSON not yet written (pending: path -> content)."""
-    script = gitops_path / "scripts" / "gen-isolation.py"
-    if not script.exists():
-        typer.echo(f"[INFO] {script} introuvable, isolation réseau non générée")
-        return
-    if dry_run:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp) / "gitops"
-            shutil.copytree(gitops_path, root, ignore=shutil.ignore_patterns(".git"))
-            for path, content in (pending or {}).items():
-                target = root / Path(path).relative_to(gitops_path)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(content)
-            r = subprocess.run([sys.executable, str(root / "scripts" / "gen-isolation.py"), "--check"],
-                               cwd=root, capture_output=True, text=True)
-        typer.echo("[EXISTS] Isolation à jour" if r.returncode == 0
-                   else f"[DRY-RUN] [UPDATE] Isolation :\n{r.stdout}{r.stderr}".rstrip())
-        return
-    r = subprocess.run([sys.executable, str(script)], cwd=gitops_path, capture_output=True, text=True)
-    if r.returncode != 0:
-        typer.secho(f"[ERROR] gen-isolation.py a échoué :\n{r.stdout}{r.stderr}", fg=typer.colors.RED)
-        raise typer.Exit(1)
-    typer.echo(f"[UPDATE] Isolation : {r.stdout.strip()}")
+    """Regenerate the network isolation file of the GitOps repo from apps/<slug>/*.json (scripts/gen-isolation.py).
+    Optional step: a repo without the script is left as is."""
+    _run_generator(gitops_path, "gen-isolation.py", "Isolation", dry_run, pending, missing="info")

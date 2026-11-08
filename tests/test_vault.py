@@ -6,6 +6,11 @@ from kubic_cli import eso, vault
 
 ADDR = "https://vault.test"
 SLUG = "demo"
+# kv/metadata bodies: a live current version, a soft-deleted one, a destroyed one
+LIVE = {"current_version": 1, "versions": {"1": {"deletion_time": "", "destroyed": False}}}
+DELETED = {"current_version": 2, "versions": {"1": {"deletion_time": "", "destroyed": False},
+                                              "2": {"deletion_time": "2026-01-01T00:00:00Z", "destroyed": False}}}
+DESTROYED = {"current_version": 1, "versions": {"1": {"deletion_time": "", "destroyed": True}}}
 
 
 class FakeResp:
@@ -64,9 +69,12 @@ def _full_existing_data(avp_role_id="existing-role-id", avp_secret_id="existing-
         f"sys/policies/acl/{SLUG}": {"policy": "path \"kv/data/demo/*\" {}"},
         f"auth/approle/role/{SLUG}": {"token_policies": [SLUG]},
         f"kv/data/argocd/avp/{SLUG}": {"role_id": avp_role_id, "secret_id": avp_secret_id},
+        f"kv/metadata/argocd/avp/{SLUG}": LIVE,
         f"kv/metadata/{SLUG}": {"keys": ["shared", "prod"]},
         f"kv/data/{SLUG}/shared": {},
+        f"kv/metadata/{SLUG}/shared": LIVE,
         f"kv/data/{SLUG}/prod": {},
+        f"kv/metadata/{SLUG}/prod": LIVE,
     }
 
 
@@ -141,7 +149,7 @@ def test_avp_credentials_check_error_aborts_without_recreating_approle_or_creden
         f"sys/policies/acl/{SLUG}": {"policy": "..."},
         f"auth/approle/role/{SLUG}": {"token_policies": [SLUG]},
     }
-    fake = _fake(monkeypatch, data=data, fail={f"kv/data/argocd/avp/{SLUG}": status})
+    fake = _fake(monkeypatch, data=data, fail={f"kv/metadata/argocd/avp/{SLUG}": status})
     with pytest.raises(RuntimeError):
         vault.provision(SLUG, ["prod"], ADDR, "t")
     assert fake.writes == []
@@ -153,6 +161,7 @@ def test_kv_metadata_list_error_aborts_without_write(monkeypatch, status):
         f"sys/policies/acl/{SLUG}": {"policy": "..."},
         f"auth/approle/role/{SLUG}": {"token_policies": [SLUG]},
         f"kv/data/argocd/avp/{SLUG}": {"role_id": "r", "secret_id": "s"},
+        f"kv/metadata/argocd/avp/{SLUG}": LIVE,
     }
     fake = _fake(monkeypatch, data=data, fail={f"kv/metadata/{SLUG}": status})
     with pytest.raises(RuntimeError):
@@ -166,9 +175,10 @@ def test_kv_env_check_error_aborts_without_write(monkeypatch, status):
         f"sys/policies/acl/{SLUG}": {"policy": "..."},
         f"auth/approle/role/{SLUG}": {"token_policies": [SLUG]},
         f"kv/data/argocd/avp/{SLUG}": {"role_id": "r", "secret_id": "s"},
+        f"kv/metadata/argocd/avp/{SLUG}": LIVE,
     }
     # "prod" sorts before "shared", so it is checked (and fails) before any write happens
-    fake = _fake(monkeypatch, data=data, fail={f"kv/data/{SLUG}/prod": status})
+    fake = _fake(monkeypatch, data=data, fail={f"kv/metadata/{SLUG}/prod": status})
     with pytest.raises(RuntimeError):
         vault.provision(SLUG, ["prod"], ADDR, "t")
     assert fake.writes == []
@@ -180,6 +190,44 @@ def test_userpass_check_error_aborts_without_write(monkeypatch, status):
     with pytest.raises(RuntimeError):
         vault.provision(SLUG, ["prod"], ADDR, "t", devs=["alice"])
     assert fake.writes == []
+
+
+# ---------------------------------------------------------------------------
+# KV existence: kv/metadata only, a deleted current version is absent
+# ---------------------------------------------------------------------------
+
+def test_kv_existence_never_reads_secret_values(monkeypatch):
+    fake = _fake(monkeypatch, data=_full_existing_data())
+    vault.provision(SLUG, ["prod"], ADDR, "t", devs=["alice"])
+    assert not [c for c in fake.calls if c[1].startswith("kv/data/")]
+
+
+@pytest.mark.parametrize("meta", [DELETED, DESTROYED])
+def test_deleted_avp_credentials_are_recreated(monkeypatch, meta):
+    data = dict(_full_existing_data(), **{f"kv/metadata/argocd/avp/{SLUG}": meta})
+    fake = _fake(monkeypatch, data=data)
+    vault.provision(SLUG, ["prod"], ADDR, "t")
+    # A new secret-id of the existing AppRole, stored back; the AppRole itself is not recreated
+    assert fake.writes == [("POST", f"auth/approle/role/{SLUG}/secret-id"), ("PUT", f"kv/data/argocd/avp/{SLUG}")]
+
+
+def test_deleted_kv_env_is_recreated(monkeypatch):
+    data = dict(_full_existing_data(), **{f"kv/metadata/{SLUG}/prod": DELETED})
+    fake = _fake(monkeypatch, data=data)
+    vault.provision(SLUG, ["prod"], ADDR, "t")
+    assert fake.writes == [("PUT", f"kv/data/{SLUG}/prod")]
+
+
+def test_dry_run_and_real_run_agree_on_existence(monkeypatch):
+    """Same kv/metadata check in both modes: what the dry-run announces is what the run does."""
+    data = dict(_full_existing_data(), **{f"kv/metadata/{SLUG}/prod": DELETED})
+    dry = _fake(monkeypatch, data=data)
+    vault.provision(SLUG, ["prod"], ADDR, "t", dry_run=True)
+    assert dry.writes == []
+    real = _fake(monkeypatch, data=data)
+    vault.provision(SLUG, ["prod"], ADDR, "t")
+    assert [c for c in dry.calls if c[0] in ("GET", "LIST")] == [c for c in real.calls if c[0] in ("GET", "LIST")]
+    assert real.writes == [("PUT", f"kv/data/{SLUG}/prod")]
 
 
 # ---------------------------------------------------------------------------

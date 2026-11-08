@@ -47,8 +47,9 @@ def ensure_rbac(rbac_path: Path, slug: str, devs: List[str], dry_run: bool = Fal
         block = ["\n", f"{indent}# Auto-generated for {slug} – kubic-cli\n"]
         # No create/update: tenants must not change their Application spec (source type, destination)
         for verb in ["delete","get","override","sync"]:
-            # Each project has its own AppProject named <slug>: the default project holds no app
-            block.append(f"{indent}p, role:{slug}, applications, {verb}, {slug}*/{slug}*, allow\n")
+            # Each project has its own AppProject named <slug>: the default project holds no app.
+            # Exact project: a <slug>* glob would also reach a project named <slug>-other
+            block.append(f"{indent}p, role:{slug}, applications, {verb}, {slug}/{slug}*, allow\n")
         for dev in devs:
             block.append(f"{indent}g, {dev}, role:{slug}\n")
         lines.extend(block)

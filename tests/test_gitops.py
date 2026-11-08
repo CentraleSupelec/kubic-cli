@@ -78,7 +78,8 @@ def test_ensure_rbac_targets_the_project_not_default(tmp_path: Path):
         for l in rbac.read_text().splitlines()
         if l.strip().startswith("p,")
     }
-    assert objects == {"demo*/demo*"}
+    # Exact project: demo*/... would also reach a "demo2" project
+    assert objects == {"demo/demo*"}
 
 
 def test_generate_appprojects_runs_the_repo_script(tmp_path: Path):

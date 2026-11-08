@@ -1,13 +1,14 @@
 import json
 import re
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import requests
 import typer
 import base64
 
 from . import cred, argo, vault, gitops
+from . import eso as eso_lib
 from .tpl import render_yaml
 from .utils import safe_write, get_ssh_host, gen_pwd, parse_existing_environments_from_k8s_yaml, smart_write, auto_detect_existing_developers, validate_project_exists, get_existing_environments, duration_to_seconds, generate_multi_environment_kubeconfig, is_new_developer, append_rolebindings_to_yaml
 from .config import DEFAULT_GITOPS_PATH
@@ -17,6 +18,76 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False
 )
+
+def _eso_precheck(eso: bool, gitops_path: Path, slug: str, env_list: List[str]):
+    """External Secrets: refuse before any write (operator namespace, paths outside <slug>/)."""
+    if not eso:
+        return
+    try:
+        for env in env_list:
+            eso_lib.target_paths(gitops_path, slug, env)
+    except eso_lib.EsoError as e:
+        typer.secho(f"[ERROR] ESO : {e}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+
+def _eso_ensure(gitops_path: Path, slug: str, env_list: List[str], vault_addr, vault_token, skip_vault: bool,
+                dry_run: bool = False):
+    ctx = eso_lib.VaultCtx(vault_addr, vault_token) if vault_addr and vault_token and not skip_vault else None
+    for env in env_list:
+        try:
+            eso_lib.ensure(gitops_path, slug, env, ctx, dry_run=dry_run)
+        except eso_lib.EsoError as e:
+            typer.secho(f"[ERROR] ESO {env} : {e}", fg=typer.colors.RED)
+            raise typer.Exit(1)
+        except RuntimeError as e:
+            typer.secho(f"[ERROR] ESO {env} : Vault : {e}", fg=typer.colors.RED)
+            raise typer.Exit(1)
+
+
+def _project_uses_avp(gitops_path: Path, slug: str) -> bool:
+    """True when a JSON of the project carries vaultCredentials: the project is rendered with AVP."""
+    return any("vaultCredentials" in json.loads(f.read_text())
+               for f in sorted((gitops_path / "apps" / slug).glob("*.json")))
+
+
+def _resolve_mode(eso: Optional[bool], gitops_path: Path, slug: str) -> bool:
+    """--eso / --avp given: as asked. Neither: the mode of the existing project (AVP as soon as
+    a JSON has vaultCredentials, ESO otherwise), so a new environment or developer never switches
+    a project's secret model by default."""
+    if eso is not None:
+        return eso
+    avp = _project_uses_avp(gitops_path, slug)
+    typer.echo(f"[INFO] Mode détecté : {'AVP (vaultCredentials dans un JSON)' if avp else 'ESO'}")
+    return not avp
+
+
+def _write_app_json(json_path: Path, slug: str, env: str, repo_url: str, eso: bool, dry_run: bool = False):
+    """--eso: externalSecrets, no vaultCredentials (rendered without AVP). --avp: vaultCredentials, no ESO key.
+    An existing file is left as is in --eso mode. In --avp mode, the only change made to an existing
+    file is adding a missing vaultCredentials: the app is then rendered with AVP again.
+    Returns the content written (or to write, in dry-run), None when the file is left as is."""
+    cred_name = f"vault-token-{slug}"
+    if json_path.exists():
+        text = json_path.read_text()
+        if eso or "vaultCredentials" in json.loads(text):
+            typer.echo(f"[SKIP] {json_path} already exists")
+            return None
+        content = eso_lib.set_key(text, "vaultCredentials", cred_name)
+        if not dry_run:
+            json_path.write_text(content)
+        typer.echo(f"{'[DRY-RUN] ' if dry_run else ''}[WRITE] {json_path} vaultCredentials : {cred_name}")
+        return content
+    data = {"valuesFiles": ["base.yaml", f"{env}.yaml"], "externalRepoURL": repo_url}
+    if not eso:
+        data["vaultCredentials"] = cred_name
+    data.update({"project": slug, "_generated_by": "kubic-cli"})
+    content = json.dumps(data, indent=2) + "\n"
+    if eso:
+        content = eso_lib.set_paths(content, eso_lib.default_paths(slug, env))
+    safe_write(json_path, content, dry_run=dry_run)
+    return content
+
 
 @app.command()
 def create_project(
@@ -32,10 +103,16 @@ def create_project(
     api_token: Optional[str] = typer.Option(None, "--api-token", envvar="KUBE_API_TOKEN", help="Token Bearer pour l'API Kubernetes"),
     insecure: bool = typer.Option(False, "--insecure-skip-tls", help="Ne pas vérifier le certificat TLS du serveur API Kubernetes"),
     ca_file: Optional[Path] = typer.Option(None, "--cluster-ca", help="Chemin vers le certificat CA pour l'API Kubernetes"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Affiche les actions prévues sans rien écrire (fichiers, Vault, cluster)"),
+    eso: bool = typer.Option(True, "--eso/--avp", help="Secrets Vault : --eso (défaut) External Secrets, sans AppRole AVP ; --avp ancien modèle argocd-vault-plugin, sans ESO"),
 ):
-    """Crée les fichiers nécessaires (apps/, secrets Vault & Repository, compte ArgoCD).
+    """Crée les fichiers nécessaires (apps/, secrets Vault & Repository, compte ArgoCD, External Secrets).
     Création du namespace Kubernetes si --api-server et --api-token sont fournis.
+    Idempotent : relancer sur un projet existant ne crée que ce qui manque.
     """
+    env_list = [e.strip() for e in environments.split(",") if e.strip()]
+    _eso_precheck(eso, gitops_path, slug, env_list)
+
     # Création du namespace
     if api_server and api_token:
         ns_url = f"{api_server.rstrip('/')}/api/v1/namespaces"
@@ -43,13 +120,19 @@ def create_project(
             "Authorization": f"Bearer {api_token}",
             "Content-Type": "application/json",
         }
-        env_list = [e.strip() for e in environments.split(",") if e.strip()]
         for env in env_list:
             ns = slug if slug == env else f"{slug}-{env}"
             body = {"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": ns}}
             # Choix de la vérification TLS : fichier CA > --insecure.
             verify_opt = str(ca_file) if ca_file and ca_file.exists() else (not insecure)
             try:
+                if dry_run:
+                    r = requests.get(f"{ns_url}/{ns}", headers=headers, timeout=10, verify=verify_opt)
+                    if r.status_code == 404:
+                        typer.echo(f"[DRY-RUN] [WRITE] Namespace {ns}")
+                    else:
+                        typer.echo(f"[EXISTS] Namespace {ns}" if r.ok else f"[WARN] Namespace {ns} : retour {r.status_code}")
+                    continue
                 r = requests.post(ns_url, json=body, headers=headers, timeout=10, verify=verify_opt)
                 if r.status_code == 201:
                     typer.echo(f"[WRITE] Namespace {ns} créé sur le cluster")
@@ -75,30 +158,28 @@ def create_project(
         typer.secho(f"[WARN] Chemin GitOps {gitops_path} introuvable. Les fichiers seront créés à la racine du projet.", fg=typer.colors.YELLOW)
         gitops_path = Path(".")
 
-    env_list = [e.strip() for e in environments.split(",") if e.strip()]
     typos = [e for e in env_list if not e]
     if typos:
         typer.echo(f"[WARN] environnements anormaux: {typos}")
 
     # 1. apps/<slug>/<env>.json
     apps_dir = gitops_path / "apps" / slug
+    pending = {}
     for env in env_list:
         json_path = apps_dir / f"{env}.json"
-        data = {
-            "valuesFiles": ["base.yaml", f"{env}.yaml"],
-            "externalRepoURL": repo_url,
-            "vaultCredentials": f"vault-token-{slug}",
-            "project": slug,
-            "_generated_by": "kubic-cli",
-        }
-        safe_write(json_path, json.dumps(data, indent=2) + "\n")
-    gitops.generate_appprojects(gitops_path)
+        content = _write_app_json(json_path, slug, env, repo_url, eso, dry_run=dry_run)
+        if content is not None:
+            pending[json_path] = content
+    gitops.generate_appprojects(gitops_path, dry_run=dry_run, pending=pending)
+    gitops.generate_isolation(gitops_path, dry_run=dry_run, pending=pending)
 
-    # 2. Vault secret YAML (AppRole) - Éviter réécriture inutile
-    if vault_addr:
+    # 2. Vault secret YAML (AppRole AVP, mode --avp) - Éviter réécriture inutile
+    if eso:
+        typer.echo(f"[INFO] Mode ESO : vault-token-{slug}.yaml non géré")
+    elif vault_addr:
         vault_dir = gitops_path / "helm" / "argocd" / "templates" / "vault"
         vault_content = render_yaml("vault-token.yaml.j2", slug=slug, vault_addr=vault_addr)
-        smart_write(vault_dir / f"vault-token-{slug}.yaml", vault_content)
+        smart_write(vault_dir / f"vault-token-{slug}.yaml", vault_content, dry_run=dry_run)
     else:
         typer.echo("[INFO] Aucun vault-addr fourni : Vault secret YAML non généré")
 
@@ -106,17 +187,17 @@ def create_project(
     repo_secret_dir = gitops_path / "helm" / "argocd" / "templates" / "repository"
     ssh_host = get_ssh_host(repo_url)
     repo_content = render_yaml("repository-secret.yaml.j2", slug=slug, repo_url=repo_url, ssh_host=ssh_host)
-    smart_write(repo_secret_dir / f"repository-{slug}.yaml", repo_content)
+    smart_write(repo_secret_dir / f"repository-{slug}.yaml", repo_content, dry_run=dry_run)
 
     dev_list = [d.strip() for d in devs.split(",") if d.strip()] if devs else []
 
     if dev_list:
         cm_path = gitops_path / "helm" / "argocd" / "templates" / "argocd-cm.yaml"
         for dev in dev_list:
-            gitops.ensure_account(cm_path, dev)
+            gitops.ensure_account(cm_path, dev, dry_run=dry_run)
 
         rbac_path = gitops_path / "helm" / "argocd" / "templates" / "argocd-rbac-cm.yaml"
-        gitops.ensure_rbac(rbac_path, slug, dev_list)
+        gitops.ensure_rbac(rbac_path, slug, dev_list, dry_run=dry_run)
 
         # 5ter. Fichiers K8s ServiceAccount pour chaque dev - Logique incrémentale
         k8s_acc_dir = gitops_path / "helm" / "argocd" / "templates" / "k8s-accounts"
@@ -147,7 +228,7 @@ def create_project(
                         full_content += '\n'
                     full_content += "---\n" + rb
 
-                smart_write(user_yaml_file, full_content, overwrite=False)
+                smart_write(user_yaml_file, full_content, overwrite=False, dry_run=dry_run)
             else:
                 # Développeur existant : ajouter seulement les nouveaux RoleBindings
                 existing_envs = parse_existing_environments_from_k8s_yaml(user_yaml_file, dev, slug)
@@ -165,7 +246,10 @@ def create_project(
                         rolebindings_content += "---\n" + rb
 
                     # Ajouter à la fin du fichier existant
-                    append_rolebindings_to_yaml(user_yaml_file, rolebindings_content)
+                    if dry_run:
+                        typer.echo(f"[DRY-RUN] [APPEND] RoleBindings {sorted(new_envs)} dans {user_yaml_file}")
+                    else:
+                        append_rolebindings_to_yaml(user_yaml_file, rolebindings_content)
                 else:
                     typer.echo(f"[INFO] Aucun nouvel environnement pour {dev}")
 
@@ -180,8 +264,19 @@ def create_project(
     elif not vault_addr or not vault_token:
         typer.echo("[INFO] Aucune adresse ou token Vault fourni : configuration Vault non effectuée")
     else:
-        vault.provision(slug, env_list, addr=vault_addr, token=vault_token, devs=dev_list)
+        try:
+            vault.provision(slug, env_list, addr=vault_addr, token=vault_token, devs=dev_list, dry_run=dry_run, avp=not eso)
+        except RuntimeError as e:
+            typer.secho(f"[ERROR] Vault : {e}", fg=typer.colors.RED)
+            raise typer.Exit(1)
 
+    # 7. External Secrets (mode --eso): after vault.provision, which creates the kv paths
+    if eso:
+        _eso_ensure(gitops_path, slug, env_list, vault_addr, vault_token, skip_vault, dry_run)
+
+    if dry_run:
+        typer.secho("\nDry-run : rien n'a été écrit.", fg=typer.colors.GREEN)
+        return
     typer.secho("\nTerminé. N'oubliez pas de :\n - Commit & push les modifications du dépôt GitOps\n - Créer la deploy key et le webhook dans GitLab", fg=typer.colors.GREEN)
 
     cred.flush()
@@ -408,6 +503,7 @@ def add_environment(
     api_token: Optional[str] = typer.Option(None, "--api-token", envvar="KUBE_API_TOKEN", help="Token Bearer pour l'API Kubernetes"),
     insecure: bool = typer.Option(False, "--insecure-skip-tls", help="Ne pas vérifier le certificat TLS"),
     ca_file: Optional[Path] = typer.Option(None, "--cluster-ca", help="Chemin vers le certificat CA pour l'API Kubernetes"),
+    eso: Optional[bool] = typer.Option(None, "--eso/--avp", help="Secrets Vault des nouveaux environnements : --eso External Secrets, --avp argocd-vault-plugin. Par défaut, le mode du projet (AVP si un JSON a vaultCredentials, ESO sinon)"),
 ):
     """Ajoute de nouveaux environnements à un projet Kubic existant.
 
@@ -465,6 +561,11 @@ def add_environment(
         raise typer.Exit(1)
     
     typer.echo(f"[INFO] Repository URL détectée: {repo_url}")
+    eso = _resolve_mode(eso, gitops_path, slug)
+    if eso and _project_uses_avp(gitops_path, slug):
+        typer.secho("[WARN] Projet existant en AVP (vaultCredentials) : les nouveaux environnements seront rendus "
+                    "sans AVP. Utilisez --avp si la chart contient des <path:...>.", fg=typer.colors.YELLOW)
+    _eso_precheck(eso, gitops_path, slug, sorted(really_new))
     
     # 5. CRÉATION NAMESPACES : Seulement les nouveaux environnements
     if api_server and api_token:
@@ -492,17 +593,10 @@ def add_environment(
     
     # 6. CRÉATION APPS JSON : Seulement les nouveaux environnements
     for env in sorted(really_new):
-        json_path = apps_dir / f"{env}.json"
-        data = {
-            "valuesFiles": ["base.yaml", f"{env}.yaml"],
-            "externalRepoURL": repo_url,
-            "vaultCredentials": f"vault-token-{slug}",
-            "project": slug,
-            "_generated_by": "kubic-cli",
-        }
-        safe_write(json_path, json.dumps(data, indent=2) + "\n")
+        _write_app_json(apps_dir / f"{env}.json", slug, env, repo_url, eso)
     gitops.generate_appprojects(gitops_path)
-    
+    gitops.generate_isolation(gitops_path)
+
     # 7. VAULT KV : Merger avec les environnements existants (la logique vault.provision fait déjà le merge)
     if skip_vault:
         typer.echo("[SKIP] Configuration Vault ignorée (--skip-vault)")
@@ -511,7 +605,15 @@ def add_environment(
     else:
         # Appeler vault.provision avec TOUS les environnements (existants + nouveaux)
         all_env_list = sorted(existing_envs | really_new)
-        vault.provision(slug, all_env_list, addr=vault_addr, token=vault_token, devs=dev_list)
+        try:
+            vault.provision(slug, all_env_list, addr=vault_addr, token=vault_token, devs=dev_list, avp=not eso)
+        except RuntimeError as e:
+            typer.secho(f"[ERROR] Vault : {e}", fg=typer.colors.RED)
+            raise typer.Exit(1)
+
+    # 7bis. External Secrets (mode --eso) for the new environments only
+    if eso:
+        _eso_ensure(gitops_path, slug, sorted(really_new), vault_addr, vault_token, skip_vault)
     
     # 8. ROLEBINDINGS K8S : Ajouter les nouveaux environnements pour les développeurs existants
     if dev_list:
@@ -686,8 +788,14 @@ def add_dev(
     elif not vault_addr or not vault_token:
         typer.echo("[INFO] Aucune adresse ou token Vault fourni : configuration Vault non effectuée")
     else:
-        # Appeler vault.provision avec tous les environnements et seulement les nouveaux devs
-        vault.provision(slug, sorted(existing_envs), addr=vault_addr, token=vault_token, devs=list(new_dev_list))
+        # Appeler vault.provision avec tous les environnements et seulement les nouveaux devs.
+        # Mode du projet : sur un projet ESO, aucune pièce AVP (AppRole, kv/argocd/avp) n'est créée.
+        try:
+            vault.provision(slug, sorted(existing_envs), addr=vault_addr, token=vault_token, devs=list(new_dev_list),
+                            avp=_project_uses_avp(gitops_path, slug))
+        except RuntimeError as e:
+            typer.secho(f"[ERROR] Vault : {e}", fg=typer.colors.RED)
+            raise typer.Exit(1)
 
     typer.secho(f"\n✅ Développeurs {sorted(really_new)} ajoutés avec succès au projet '{slug}'", fg=typer.colors.GREEN)
     typer.echo(f"   Accès à tous les environnements: {sorted(existing_envs)}")

@@ -15,6 +15,7 @@ def collect(
     note: str = "",
     link: Optional[str] = None,
     payload: Optional[str] = None,
+    group: Optional[str] = None,
 ):
     """Enregistre un credential pour affichage ultérieur.
 
@@ -22,6 +23,7 @@ def collect(
     lien Password Pusher sera généré automatiquement.
     payload : contenu envoyé à Password Pusher (ex: kubeconfig complet). Par
     défaut, login/secret/url.
+    group : les credentials d'un même groupe partent dans un seul lien Password Pusher.
     """
     _CREDS.append({
         "service": service,
@@ -31,6 +33,7 @@ def collect(
         "note": note,
         "link": link,
         "payload": payload,
+        "group": group,
     })
 
 
@@ -52,6 +55,14 @@ def _push_secret(secret: str) -> Optional[str]:
     return None
 
 
+def _payload(cred: Dict) -> str:
+    return cred.get("payload") or (
+        f"login: {cred['login']}\n"
+        f"secret: {cred['secret']}\n"
+        f"url: {cred.get('link') or cred['url']}\n"
+    )
+
+
 def _short(text: str, limit: int) -> str:
     if text is None:
         return ""
@@ -64,15 +75,15 @@ def flush():
     if not _CREDS:
         return
 
-    # Push secrets et récupérer liens
-    for cred in _CREDS:
-        display_url = cred.get("link") or cred["url"]
-        payload = cred.get("payload") or (
-            f"login: {cred['login']}\n"
-            f"secret: {cred['secret']}\n"
-            f"url: {display_url}\n"
-        )
-        cred["pwp"] = _push_secret(payload)
+    # Push secrets et récupérer liens : un lien par credential, ou par groupe
+    batches: Dict[object, List[Dict]] = {}
+    for i, cred in enumerate(_CREDS):
+        batches.setdefault(cred.get("group") or i, []).append(cred)
+    for batch in batches.values():
+        # Un seul lien pour le groupe : affiché sur son premier credential seulement
+        batch[0]["pwp"] = _push_secret("\n".join(_payload(cred) for cred in batch))
+        for cred in batch[1:]:
+            cred["pwp"] = None
 
     # Affichage tableau
     term_width = shutil.get_terminal_size((120, 20)).columns
@@ -117,6 +128,8 @@ def flush():
             print()  # Ligne vide entre chaque credential
         
         for k in row.keys():
+            if k == "link" and not row[k]:
+                continue  # lien porté par le premier credential du groupe
             value = _short(row[k], limit)
             attr_name = k.capitalize()
             print(f"{attr_name:<{attr_width}} | {value}")

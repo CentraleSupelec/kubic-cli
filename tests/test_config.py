@@ -1,3 +1,4 @@
+from importlib import reload
 from pathlib import Path
 
 from kubic_cli import config as cfg
@@ -33,4 +34,17 @@ def test_toml_override(monkeypatch, tmp_path):
     importlib.reload(cfg2)
 
     assert cfg2.YAML_HEADER == "# TOML HEADER\n"
-    assert cfg2.DEFAULT_GITOPS_PATH == Path("toml-path") 
+    assert cfg2.DEFAULT_GITOPS_PATH == Path("toml-path")
+
+def test_harbor_email_domain_resolves_env_then_toml_then_default(monkeypatch, tmp_path):
+    toml_path = tmp_path / "conf.toml"
+    toml_path.write_text('harbor_email_domain = "toml.example.test"\n')
+    monkeypatch.setenv("KUBIC_CLI_CONFIG", str(tmp_path / "absent.toml"))
+    monkeypatch.delenv("KUBIC_CLI_HARBOR_EMAIL_DOMAIN", raising=False)
+    assert reload(cfg).HARBOR_EMAIL_DOMAIN == ""
+
+    monkeypatch.setenv("KUBIC_CLI_CONFIG", str(toml_path))
+    assert reload(cfg).HARBOR_EMAIL_DOMAIN == "toml.example.test"
+
+    monkeypatch.setenv("KUBIC_CLI_HARBOR_EMAIL_DOMAIN", "env.example.test")
+    assert reload(cfg).HARBOR_EMAIL_DOMAIN == "env.example.test"

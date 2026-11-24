@@ -1,5 +1,6 @@
 import json
 import re
+from contextlib import contextmanager
 from pathlib import Path
 from typing import List, Optional
 
@@ -7,11 +8,11 @@ import requests
 import typer
 import base64
 
-from . import cred, argo, vault, gitops
+from . import cred, argo, vault, gitops, harbor
 from . import eso as eso_lib
 from .tpl import render_yaml
 from .utils import safe_write, get_ssh_host, gen_pwd, parse_existing_environments_from_k8s_yaml, smart_write, auto_detect_existing_developers, validate_project_exists, get_existing_environments, duration_to_seconds, generate_multi_environment_kubeconfig, is_new_developer, append_rolebindings_to_yaml
-from .config import DEFAULT_GITOPS_PATH
+from .config import DEFAULT_GITOPS_PATH, HARBOR_EMAIL_DOMAIN
 
 app = typer.Typer(
     help="Kubic CLI - Automatisation GitOps pour Kubernetes\n\nAutomatise la création d'applications dans un environnement Kubic (Argo CD + Vault).\n\nVoir README.md pour la documentation complète.",
@@ -89,6 +90,35 @@ def _write_app_json(json_path: Path, slug: str, env: str, repo_url: str, eso: bo
     return content
 
 
+@contextmanager
+def _harbor_errors():
+    try:
+        yield
+    except RuntimeError as e:
+        typer.secho(f"[ERROR] Harbor : {e}", fg=typer.colors.RED)
+        cred.flush()
+        raise typer.Exit(1)
+
+
+def _harbor_client(url: Optional[str], user: Optional[str], password: Optional[str], skip: bool, dry_run: bool = False):
+    if skip:
+        typer.echo("[SKIP] Configuration Harbor ignorée (--skip-harbor)")
+        return None
+    if not (url and user and password):
+        typer.echo("[INFO] Harbor non configuré (--harbor-url, --harbor-user, --harbor-password) : rien fait sur Harbor")
+        return None
+    return harbor.Harbor(url, user, password, dry_run=dry_run)
+
+
+def _harbor_users_precheck(harbor_users: bool, skip: bool, url: Optional[str], user: Optional[str],
+                           password: Optional[str]):
+    """--harbor-users needs the email domain of the accounts: refuse before any write when it is not set."""
+    if harbor_users and not skip and url and user and password and not HARBOR_EMAIL_DOMAIN:
+        typer.secho("[ERROR] Harbor : --harbor-users demande le domaine des emails (harbor_email_domain dans "
+                    "config.toml ou KUBIC_CLI_HARBOR_EMAIL_DOMAIN)", fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+
 @app.command()
 def create_project(
     slug: str = typer.Argument(..., help="Identifiant du projet, utilisé comme nom de namespace / dossier"),
@@ -105,6 +135,11 @@ def create_project(
     ca_file: Optional[Path] = typer.Option(None, "--cluster-ca", help="Chemin vers le certificat CA pour l'API Kubernetes"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Affiche les actions prévues sans rien écrire (fichiers, Vault, cluster)"),
     eso: bool = typer.Option(True, "--eso/--avp", help="Secrets Vault : --eso (défaut) External Secrets, sans AppRole AVP ; --avp ancien modèle argocd-vault-plugin, sans ESO"),
+    harbor_url: Optional[str] = typer.Option(None, "--harbor-url", envvar="HARBOR_URL", help="URL du registre Harbor"),
+    harbor_user: Optional[str] = typer.Option(None, "--harbor-user", envvar="HARBOR_USER", help="Compte admin Harbor"),
+    harbor_password: Optional[str] = typer.Option(None, "--harbor-password", envvar="HARBOR_PASSWORD", help="Mot de passe admin Harbor", show_default=False),
+    harbor_users: bool = typer.Option(False, "--harbor-users", help="Crée aussi un compte Harbor pour chaque dev de --devs, admin du projet"),
+    skip_harbor: bool = typer.Option(False, "--skip-harbor", help="Ne pas configurer Harbor pour ce projet"),
 ):
     """Crée les fichiers nécessaires (apps/, secrets Vault & Repository, compte ArgoCD, External Secrets).
     Création du namespace Kubernetes si --api-server et --api-token sont fournis.
@@ -112,6 +147,7 @@ def create_project(
     """
     env_list = [e.strip() for e in environments.split(",") if e.strip()]
     _eso_precheck(eso, gitops_path, slug, env_list)
+    _harbor_users_precheck(harbor_users, skip_harbor, harbor_url, harbor_user, harbor_password)
 
     # Création du namespace
     if api_server and api_token:
@@ -273,6 +309,12 @@ def create_project(
     # 7. External Secrets (mode --eso): after vault.provision, which creates the kv paths
     if eso:
         _eso_ensure(gitops_path, slug, env_list, vault_addr, vault_token, skip_vault, dry_run)
+
+    client = _harbor_client(harbor_url, harbor_user, harbor_password, skip_harbor, dry_run)
+    if client:
+        with _harbor_errors():
+            k8s_robot = harbor.provision(client, slug, devs=dev_list if harbor_users else [], email_domain=HARBOR_EMAIL_DOMAIN)
+            harbor.publish_pull_secret(client, slug, k8s_robot, None if skip_vault else vault_addr, vault_token)
 
     if dry_run:
         typer.secho("\nDry-run : rien n'a été écrit.", fg=typer.colors.GREEN)
@@ -685,6 +727,11 @@ def add_dev(
     vault_addr: Optional[str] = typer.Option(None, "--vault-addr", envvar="VAULT_ADDR", help="Adresse du serveur Vault"),
     vault_token: Optional[str] = typer.Option(None, "--vault-token", envvar="VAULT_TOKEN", help="Token Vault ayant les droits d'admin"),
     skip_vault: bool = typer.Option(False, "--skip-vault", help="Ne pas configurer Vault pour ces développeurs"),
+    harbor_url: Optional[str] = typer.Option(None, "--harbor-url", envvar="HARBOR_URL", help="URL du registre Harbor"),
+    harbor_user: Optional[str] = typer.Option(None, "--harbor-user", envvar="HARBOR_USER", help="Compte admin Harbor"),
+    harbor_password: Optional[str] = typer.Option(None, "--harbor-password", envvar="HARBOR_PASSWORD", help="Mot de passe admin Harbor", show_default=False),
+    harbor_users: bool = typer.Option(False, "--harbor-users", help="Crée un compte Harbor pour chaque dev, admin du projet"),
+    skip_harbor: bool = typer.Option(False, "--skip-harbor", help="Ne pas configurer Harbor pour ces développeurs"),
 ):
     """Ajoute de nouveaux développeurs à un projet Kubic existant.
 
@@ -705,6 +752,7 @@ def add_dev(
     if not new_dev_list:
         typer.secho("[ERROR] Aucun développeur fourni", fg=typer.colors.RED)
         raise typer.Exit(1)
+    _harbor_users_precheck(harbor_users, skip_harbor, harbor_url, harbor_user, harbor_password)
 
     # 3. AUTO-DÉTECTION : Récupérer développeurs existants
     existing_devs = set(auto_detect_existing_developers(gitops_path, slug))
@@ -796,6 +844,11 @@ def add_dev(
         except RuntimeError as e:
             typer.secho(f"[ERROR] Vault : {e}", fg=typer.colors.RED)
             raise typer.Exit(1)
+
+    client = _harbor_client(harbor_url, harbor_user, harbor_password, skip_harbor) if harbor_users else None
+    if client:
+        with _harbor_errors():
+            harbor.provision_users(client, slug, new_dev_list, HARBOR_EMAIL_DOMAIN)
 
     typer.secho(f"\n✅ Développeurs {sorted(really_new)} ajoutés avec succès au projet '{slug}'", fg=typer.colors.GREEN)
     typer.echo(f"   Accès à tous les environnements: {sorted(existing_envs)}")

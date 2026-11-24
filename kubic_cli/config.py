@@ -56,9 +56,12 @@ DEFAULT_GITOPS_PATH: Path = Path(_cfg("gitops_path", "KUBIC_CLI_GITOPS_PATH", "s
 # URL de l'instance Password Pusher (endpoint /p.json). Permet d'utiliser une instance auto-hébergée.
 PW_PUSH_URL: str = _cfg("pw_push_url", "KUBIC_CLI_PWPUSH_URL", "https://pwpush.com/p.json")
 
+HARBOR_EMAIL_DOMAIN: str = _cfg("harbor_email_domain", "KUBIC_CLI_HARBOR_EMAIL_DOMAIN", "")
+
 __all__ = [
     "YAML_HEADER",
     "DEFAULT_GITOPS_PATH",
     "PW_PUSH_URL",
+    "HARBOR_EMAIL_DOMAIN",
     "CONFIG_PATH",
 ]

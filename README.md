@@ -5,6 +5,7 @@
 Kubic CLI simplifie la création et la gestion de projets Kubernetes en automatisant la configuration de :
 - 🗂️ **GitOps** : Arborescence de manifests pour Argo CD
 - 🔐 **Vault** : Policies, AppRoles et secrets
+- 📦 **Harbor** : Projet privé, robots CI et cluster, comptes développeurs
 - ☸️ **Kubernetes** : Namespaces, ServiceAccounts et RoleBindings
 - 🔑 **Accès développeurs** : Génération automatique de tokens et kubeconfigs
 
@@ -48,6 +49,11 @@ KUBE_API_TOKEN=your-k8s-admin-token
 # Argo CD (optionnel)
 ARGOCD_URL=https://argocd.example.com
 ARGOCD_TOKEN=your-argocd-token
+
+# Harbor (optionnel, compte admin)
+HARBOR_URL=https://registry.example.com
+HARBOR_USER=admin
+HARBOR_PASSWORD=your-harbor-admin-password
 ```
 
 Créer `secrets/ca.crt` avec le certificat CA de votre cluster Kubernetes.
@@ -112,6 +118,7 @@ shared-k8s-prd/
 - ✅ Vault policies et userpass pour les développeurs
 - ✅ External Secrets : clé `externalSecrets` du JSON, store Vault et rôle/policy `eso-<ns>` (voir plus bas)
 - ✅ AppProjects et isolation réseau du dépôt GitOps régénérés (`scripts/gen-appprojects.py`, `scripts/gen-isolation.py`)
+- ✅ Harbor, si `HARBOR_URL`, `HARBOR_USER` et `HARBOR_PASSWORD` sont fournis : projet privé, robots `gitlab-ci` et `k8s`, clé `dockerconfigjson` dans `kv/<slug>/shared`, comptes des développeurs avec `--harbor-users` (voir « Harbor » plus bas)
 
 Mode par défaut `--eso` : aucune pièce argocd-vault-plugin (AVP) n'est créée pour un nouveau projet (pas d'AppRole, pas de `kv/argocd/avp/<slug>`, pas de `vault-token-<slug>.yaml`, pas de `vaultCredentials` dans les JSON). `--avp` garde l'ancien modèle à l'identique, sans étape ESO (voir « AVP ou ESO » plus bas).
 
@@ -133,6 +140,8 @@ Mêmes modes que `create-project`, pour les seuls nouveaux environnements. Sans 
 ```
 
 Côté Vault, `add-dev` suit le mode du projet : sur un projet ESO (aucun `vaultCredentials` dans les JSON), aucune pièce AVP n'est créée.
+
+Côté Harbor, `add-dev` ne fait rien sans `--harbor-users`. Avec : un compte Harbor par développeur de `--devs`, membre `projectAdmin` du projet (créé s'il manque, sans robots).
 
 ### Générer les tokens et kubeconfigs
 
@@ -177,6 +186,24 @@ Le JSON est la source de vérité. Refusés : le namespace `external-secrets` de
 ```bash
 ./kubic-cli create-project myapp --repo-url ... --envs preprod,prod --dry-run   # lecture seule
 ./kubic-cli create-project myapp --repo-url ... --envs preprod,prod             # applique
+```
+
+### Harbor
+
+Activé par `create-project` dès que l'URL, le compte et le mot de passe admin sont fournis (`--harbor-url`/`HARBOR_URL`, `--harbor-user`/`HARBOR_USER`, `--harbor-password`/`HARBOR_PASSWORD`). Sinon `[INFO]` et aucun appel ; `--skip-harbor` l'ignore explicitement. Le mot de passe admin n'est jamais affiché.
+
+- projet **privé** `<slug>`, quota par défaut ;
+- robots de niveau projet, sans expiration : `gitlab-ci` (repository pull + push, pour la CI) et `k8s` (repository pull, pour le cluster). Le nom réel (`robot$<slug>+gitlab-ci`, `robot$<slug>+k8s` avec le préfixe par défaut) est lu dans la réponse de Harbor ;
+- quand le robot `k8s` vient d'être créé : clé `dockerconfigjson` ajoutée à `kv/<slug>/shared` (les autres clés sont conservées), valeur `{"auths":{"<hôte du registre>":{"auth":"<base64(nom:secret)>"}}}`, prête pour un ExternalSecret de type `kubernetes.io/dockerconfigjson`. Robot déjà existant (son secret n'est plus lisible), Vault non configuré ou `--skip-vault` : `[WARN]` et rien n'est écrit ;
+- avec `--harbor-users` : pour chaque développeur de `--devs`, un compte `<login>` (email `<login>@<harbor_email_domain>`, mot de passe aléatoire) ajouté membre `projectAdmin` du projet.
+
+Les secrets des robots et les mots de passe des comptes créés passent par Password Pusher, tous ensemble dans un seul lien. Rien d'existant n'est modifié : un robot existant n'est jamais régénéré, un compte existant garde son mot de passe, un membre existant garde son rôle. Comme pour Vault, seul un 404 vaut « absent » : toute autre erreur de lecture (401, 403, 5xx, réseau) arrête la commande avec `[ERROR] Harbor : …`. `--dry-run` n'écrit rien, ni dans Harbor ni dans Vault.
+
+Le domaine des emails se règle par `harbor_email_domain` dans `config.toml` ou `KUBIC_CLI_HARBOR_EMAIL_DOMAIN` (ex. `example.org`). Sans valeur, `--harbor-users` s'arrête avant toute écriture.
+
+```bash
+./kubic-cli create-project myapp --repo-url ... --devs alice,bob --harbor-users
+./kubic-cli add-dev myapp --devs charlie --harbor-users
 ```
 
 ### AVP ou ESO (`--eso` / `--avp`)

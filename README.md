@@ -156,7 +156,7 @@ Après avoir déployé via GitOps (commit → push → ArgoCD sync) :
 ```
 
 **Résultat :**
-- 🎫 Tokens Kubernetes générés (valides 90 jours)
+- 🎫 Tokens Kubernetes générés via `TokenRequest`, valides 3 mois (`--duration 2160h` par défaut)
 - 📄 Kubeconfigs multi-environnements créés dans `./configs/`
 - 🔗 Liens Password Pusher pour partager les credentials de manière sécurisée
 
@@ -349,7 +349,7 @@ kubectl config use-context alice-prod@kubic --kubeconfig configs/alice.kubeconfi
 
 ✅ **Utilisez git-crypt** pour chiffrer les secrets si vous devez les versionner
 
-✅ **Rotation des tokens** : Les tokens K8s ont une durée limitée (configurée via `--duration`)
+✅ **Rotation des tokens** : Les tokens K8s expirent toujours (3 mois par défaut, configurable via `--duration`). Le dépôt GitOps ne contient aucun token : `k8s-accounts/user-<dev>.yaml` ne déclare que le ServiceAccount et ses RoleBindings, sans Secret `kubernetes.io/service-account-token`
 
 ✅ **Password Pusher** : Partagez les credentials via les liens auto-expirables générés
 
@@ -388,6 +388,21 @@ Si vous n'utilisez pas Vault :
   --cluster-ca secrets/ca.crt \
   --write-kubeconfig ./configs/
 ```
+
+Formats acceptés : `<nombre><s|m|h|d>` (ex. `2160h`, `90d`). Une durée vide, nulle (`0`, `0h`) ou illisible est refusée : aucun token sans expiration.
+
+### Renouveler un token expiré
+
+Le token d'un développeur expire au bout de 3 mois. Pour le renouveler, relancer `setup-devs` : un nouveau token et un nouveau kubeconfig sont générés, sans aucune modification du dépôt GitOps.
+
+```bash
+./kubic-cli setup-devs myapp \
+  --devs alice \
+  --cluster-ca secrets/ca.crt \
+  --write-kubeconfig ./configs/
+```
+
+Envoyer ensuite au développeur le nouveau lien Password Pusher (ou `configs/alice.kubeconfig`).
 
 ### Afficher le kubeconfig dans le terminal
 

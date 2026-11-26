@@ -185,21 +185,21 @@ def get_existing_environments(gitops_path: Path, slug: str) -> set:
 
 def duration_to_seconds(duration: str) -> int:
     """Convert duration string like '2160h', '30d', '60m' to seconds.
-    
-    Supports: s (seconds), m (minutes), h (hours), d (days)
-    Returns 3600 (1h) as default if parsing fails.
+
+    Supports: s (seconds), m (minutes), h (hours), d (days).
+    Raises ValueError on an empty, unreadable or zero duration: a Kubernetes token
+    must always expire.
     """
     import re
-    
-    match = re.match(r"(\d+)([smhd])", duration)
+
+    match = re.fullmatch(r"(\d+)([smhd])", (duration or "").strip())
     if not match:
-        return 3600  # Default 1 hour
-    
-    value = int(match.group(1))
-    unit = match.group(2)
-    multipliers = {"s": 1, "m": 60, "h": 3600, "d": 86400}
-    
-    return value * multipliers[unit]
+        raise ValueError(f"durée invalide {duration!r} : attendu <nombre><s|m|h|d>, ex. 2160h")
+
+    seconds = int(match.group(1)) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[match.group(2)]
+    if seconds <= 0:
+        raise ValueError(f"durée nulle {duration!r} refusée : le token doit expirer")
+    return seconds
 
 
 def generate_multi_environment_kubeconfig(

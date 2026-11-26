@@ -63,6 +63,33 @@ def _resolve_mode(eso: Optional[bool], gitops_path: Path, slug: str) -> bool:
     return not avp
 
 
+def _user_k8s_accounts_yaml(dev: str, slug: str, envs) -> str:
+    """Contenu de k8s-accounts/user-<dev>.yaml : ServiceAccount + un RoleBinding par environnement.
+
+    Aucun Secret de type kubernetes.io/service-account-token : le kubeconfig du développeur
+    porte un jeton TokenRequest à durée limitée (voir setup-devs --duration).
+    """
+    docs = [render_yaml("k8s-serviceaccount.yaml.j2", user=dev)]
+    docs += [render_yaml("k8s-rolebinding.yaml.j2", user=dev, slug=slug, env=env) for env in sorted(envs)]
+    content = ""
+    for i, doc in enumerate(docs):
+        if i:
+            if not content.endswith("\n"):
+                content += "\n"
+            content += "---\n"
+        content += doc
+    return content
+
+
+def _parse_duration(value: str) -> str:
+    """Refuse une durée vide, nulle ou illisible : pas de jeton Kubernetes sans fin."""
+    try:
+        duration_to_seconds(value)
+    except ValueError as e:
+        raise typer.BadParameter(str(e))
+    return value
+
+
 def _write_app_json(json_path: Path, slug: str, env: str, repo_url: str, eso: bool, dry_run: bool = False):
     """--eso: externalSecrets, no vaultCredentials (rendered without AVP). --avp: vaultCredentials, no ESO key.
     An existing file is left as is in --eso mode. In --avp mode, the only change made to an existing
@@ -244,26 +271,7 @@ def create_project(
                 # Nouveau développeur : créer le fichier complet
                 typer.echo(f"[INFO] Nouveau développeur {dev} : création complète")
 
-                # ServiceAccount + Secret
-                sa_content = render_yaml("k8s-serviceaccount.yaml.j2", user=dev)
-                secret_content = render_yaml("k8s-secret.yaml.j2", user=dev)
-
-                # RoleBindings pour tous les environnements
-                rolebindings = []
-                for env in sorted(env_list):
-                    rb = render_yaml("k8s-rolebinding.yaml.j2", user=dev, slug=slug, env=env)
-                    rolebindings.append(rb)
-
-                # Assembler tout le contenu
-                full_content = sa_content
-                if not full_content.endswith('\n'):
-                    full_content += '\n'
-                full_content += "---\n" + secret_content
-                for rb in rolebindings:
-                    if not full_content.endswith('\n'):
-                        full_content += '\n'
-                    full_content += "---\n" + rb
-
+                full_content = _user_k8s_accounts_yaml(dev, slug, env_list)
                 smart_write(user_yaml_file, full_content, overwrite=False, dry_run=dry_run)
             else:
                 # Développeur existant : ajouter seulement les nouveaux RoleBindings
@@ -340,7 +348,7 @@ def setup_devs(
     api_server: Optional[str] = typer.Option(None, "--api-server", envvar="KUBE_API", help="URL du serveur API Kubernetes"),
     api_token: Optional[str] = typer.Option(None, "--api-token", envvar="KUBE_API_TOKEN", help="Token Bearer pour l'API Kubernetes"),
     insecure: bool = typer.Option(False, "--insecure-skip-tls", help="Ne pas vérifier le certificat TLS de l'API"),
-    duration: str = typer.Option("2160h", "--duration", help="Durée du token ServiceAccount (ex: 2160h)"),
+    duration: str = typer.Option("2160h", "--duration", callback=_parse_duration, help="Durée de validité du token ServiceAccount, > 0 (ex: 2160h = 3 mois, 30d, 90m)"),
     write_kubeconfig: Optional[Path] = typer.Option(None, "--write-kubeconfig", help="Répertoire où écrire <dev>.kubeconfig pour chaque dev, créé si absent (ou '-' pour stdout)"),
     cluster_name: str = typer.Option("kubic", "--cluster-name", help="Nom du cluster dans le kubeconfig généré"),
     context_name: Optional[str] = typer.Option(None, "--context-name", help="Nom du contexte (défaut <user>-<env>@<cluster> pour multi-env)"),
@@ -667,24 +675,7 @@ def add_environment(
                 typer.secho(f"[WARN] Fichier {user_yaml_file} introuvable pour {dev}, création complète", fg=typer.colors.YELLOW)
 
                 # Créer le fichier complet avec tous les environnements
-                sa_content = render_yaml("k8s-serviceaccount.yaml.j2", user=dev)
-                secret_content = render_yaml("k8s-secret.yaml.j2", user=dev)
-
-                rolebindings = []
-                all_envs = sorted(existing_envs | really_new)
-                for env in all_envs:
-                    rb = render_yaml("k8s-rolebinding.yaml.j2", user=dev, slug=slug, env=env)
-                    rolebindings.append(rb)
-
-                full_content = sa_content
-                if not full_content.endswith('\n'):
-                    full_content += '\n'
-                full_content += "---\n" + secret_content
-                for rb in rolebindings:
-                    if not full_content.endswith('\n'):
-                        full_content += '\n'
-                    full_content += "---\n" + rb
-
+                full_content = _user_k8s_accounts_yaml(dev, slug, existing_envs | really_new)
                 smart_write(user_yaml_file, full_content, overwrite=False)
             else:
                 # Développeur existant : ajouter seulement les nouveaux RoleBindings
@@ -808,26 +799,7 @@ def add_dev(
 
         typer.echo(f"[INFO] Création fichier K8s complet pour {dev}")
 
-        # ServiceAccount + Secret
-        sa_content = render_yaml("k8s-serviceaccount.yaml.j2", user=dev)
-        secret_content = render_yaml("k8s-secret.yaml.j2", user=dev)
-
-        # RoleBindings pour tous les environnements existants
-        rolebindings = []
-        for env in sorted(existing_envs):
-            rb = render_yaml("k8s-rolebinding.yaml.j2", user=dev, slug=slug, env=env)
-            rolebindings.append(rb)
-
-        # Assembler tout le contenu
-        full_content = sa_content
-        if not full_content.endswith('\n'):
-            full_content += '\n'
-        full_content += "---\n" + secret_content
-        for rb in rolebindings:
-            if not full_content.endswith('\n'):
-                full_content += '\n'
-            full_content += "---\n" + rb
-
+        full_content = _user_k8s_accounts_yaml(dev, slug, existing_envs)
         smart_write(user_yaml_file, full_content, overwrite=False)
 
     # 7. VAULT : Configuration pour les nouveaux développeurs

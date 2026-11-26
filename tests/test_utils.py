@@ -1,3 +1,4 @@
+import pytest
 from pathlib import Path
 
 from kubic_cli import utils
@@ -40,10 +41,13 @@ def test_duration_to_seconds():
     assert utils.duration_to_seconds("2h") == 7200
     assert utils.duration_to_seconds("1d") == 86400
     assert utils.duration_to_seconds("2160h") == 7776000
-    
-    # Invalid format should return default (3600)
-    assert utils.duration_to_seconds("invalid") == 3600
-    assert utils.duration_to_seconds("") == 3600
+
+
+@pytest.mark.parametrize("bad", ["", "   ", "0h", "0", "0d", "invalid", "2160", "2160hours", "-1h"])
+def test_duration_to_seconds_refuses_empty_zero_or_invalid(bad):
+    """No endless token: an empty, zero or unreadable duration is an error, never a silent default."""
+    with pytest.raises(ValueError):
+        utils.duration_to_seconds(bad)
 
 
 def test_smart_write(tmp_path: Path):
